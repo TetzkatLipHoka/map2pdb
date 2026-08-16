@@ -32,6 +32,8 @@ uses
   debug.info.reader.map in 'debug.info.reader.map.pas',
   debug.info.reader.test in 'debug.info.reader.test.pas',
   debug.info.reader.jdbg in 'debug.info.reader.jdbg.pas',
+  debug.info.reader.madexcept in 'debug.info.reader.madexcept.pas',
+  debug.info.reader.pe in 'debug.info.reader.pe.pas',
   debug.info.codeview in 'debug.info.codeview.pas',
   debug.info.msf in 'debug.info.msf.pas',
   debug.info.pdb in 'debug.info.pdb.pas',
@@ -95,9 +97,10 @@ begin
   Writeln('  -blocksize:<nnnn>          Set MSF block size');
   Writeln('                             (default: 4096, valid values are 1024, 2048, 4096,');
   Writeln('                             8192, etc.)');
-  Writeln('  -format:<source format>    Specify input file format: Map or Jdbg');
+  Writeln('  -format:<source format>    Specify input file format: Map, Jdbg or Pe');
   Writeln('                             By default auto detects from file type and falls');
-  Writeln('                             back to map format.');
+  Writeln('                             back to map format. .exe/.dll/.bpl are read as Pe');
+  Writeln('                             (embedded JCLDEBUG section or madExcept resource).');
   Writeln('  -pause                     Prompt after completion');
   Writeln;
   Writeln('Examples:');
@@ -159,10 +162,10 @@ const
   WriterClasses: array[TTargetType] of TDebugInfoWriterClass = (TDebugInfoPdbWriter, TDebugInfoYamlWriter);
 
 type
-  TInputFormat = (ifMap, ifJdbg, ifTest);
+  TInputFormat = (ifMap, ifJdbg, ifPE, ifMad, ifTest);
 const
-  sInputFileTypes: array[TInputFormat] of string = ('.map', '.jdbg', '.test');
-  ReaderClasses: array[TInputFormat] of TDebugInfoReaderClass = (TDebugInfoMapReader, TDebugInfoJdbgReader, TDebugInfoSyntheticReader);
+  sInputFileTypes: array[TInputFormat] of string = ('.map', '.jdbg', '.pe', '.mad', '.test');
+  ReaderClasses: array[TInputFormat] of TDebugInfoReaderClass = (TDebugInfoMapReader, TDebugInfoJdbgReader, TDebugInfoPEReader, TDebugInfoMadExceptReader, TDebugInfoSyntheticReader);
 
 function TryStrToInputFormat(const AName: string; var InputFormat: TInputFormat): boolean;
 begin
@@ -256,7 +259,10 @@ begin
       begin
         // Then try to get it from the file type
         FileType := TPath.GetExtension(SourceFilename);
-        TryStrToInputFormat(FileType, InputFormat);
+        if (not TryStrToInputFormat(FileType, InputFormat)) then
+          // Compiled PE images (embedded JCLDEBUG section or madExcept resource)
+          if (MatchText(FileType, ['.exe', '.dll', '.bpl'])) then
+            InputFormat := ifPE;
       end;
 
 
@@ -345,7 +351,11 @@ begin
 
       if (PEFilename = '') then
       begin
-        PEFilename := TPath.ChangeExtension(SourceFilename, '.exe');
+        // When the source already is a PE image, bind that same file.
+        if (MatchText(TPath.GetExtension(SourceFilename), ['.exe', '.dll', '.bpl'])) then
+          PEFilename := SourceFilename
+        else
+          PEFilename := TPath.ChangeExtension(SourceFilename, '.exe');
 
         Logger.Info('PE filename not specified. Defaulting to %s', [TPath.GetFileName(PEFilename)]);
       end;
