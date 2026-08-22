@@ -445,25 +445,44 @@ end;
 // -----------------------------------------------------------------------------
 
 procedure TDebugInfoMadExceptReader.ParseDebugInfo(DebugInfo: TDebugInfo; const Data: TBytes);
+var
+  Segment: TDebugInfoSegment;
+  Cursor: TByteCursor;
+  SegCount: Integer;
+  i: Integer;
+  Rva: Cardinal;
+  Len: Cardinal;
+  UnitName: string;
+  ModuleOverlap: TDebugInfoModule;
+  Module: TDebugInfoModule;
+  PubCount: Integer;
+  Address: Cardinal;
+  Name: string;
+  RelativeOffset: TDebugInfoOffset;
+  Symbol: TDebugInfoSymbol;
+  LineCount: Integer;
+  LineNumber: Integer;
+  LineAddr: Cardinal;
+  SourceFile: TDebugInfoSourceFile;
+  MaxSegmentSize: TDebugInfoOffset;
 begin
   Logger.Debug('- Synthesizing .text segment');
-  var Segment := DebugInfo.Segments.Add(1, '.text', sctCODE);
+  Segment := DebugInfo.Segments.Add(1, '.text', sctCODE);
   Segment.Offset := $00000000;
   Segment.Size := 0;
 
-  var Cursor: TByteCursor;
   Cursor.Data := @Data[0];
   Cursor.Size := Length(Data);
   Cursor.Pos := 0;
 
   // --- Segments (one code range per unit -> a module) -------------------
   Logger.Info('- Modules');
-  var SegCount := Cursor.ReadInteger;
-  for var i := 0 to SegCount-1 do
+  SegCount := Cursor.ReadInteger;
+  for i := 0 to SegCount-1 do
   begin
-    var Rva := Cursor.ReadCardinal;
-    var Len := Cursor.ReadCardinal;
-    var UnitName := Cursor.ReadPackedString;
+    Rva := Cursor.ReadCardinal;
+    Len := Cursor.ReadCardinal;
+    UnitName := Cursor.ReadPackedString;
 
     if (Len = 0) then
     begin
@@ -471,11 +490,11 @@ begin
       continue;
     end;
 
-    var ModuleOverlap := DebugInfo.Modules.FindOverlap(Segment, Rva, Len);
+    ModuleOverlap := DebugInfo.Modules.FindOverlap(Segment, Rva, Len);
     if (ModuleOverlap <> nil) then
       Logger.Error('[%6d] Modules overlap: %s and %s', [i, ModuleOverlap.Name, UnitName]);
 
-    var Module := DebugInfo.Modules.Add(UnitName, Segment, Rva, Len);
+    Module := DebugInfo.Modules.Add(UnitName, Segment, Rva, Len);
     Logger.Debug('  Module[%6d]: %.8X (Size:%.4X) %s', [i, Rva, Len, UnitName]);
 
     // Synthesize a source file (madExcept keys lines by unit, not filename)
@@ -485,22 +504,22 @@ begin
 
   // --- Publics (symbols) ------------------------------------------------
   Logger.Info('- Symbols');
-  var PubCount := Cursor.ReadInteger;
-  var Address: Cardinal := 0;
-  for var i := 0 to PubCount-1 do
+  PubCount := Cursor.ReadInteger;
+  Address := 0;
+  for i := 0 to PubCount-1 do
   begin
-    var Name := Cursor.ReadPackedString;
+    Name := Cursor.ReadPackedString;
     if (i = 0) then
       Address := Cursor.ReadCardinal
     else
       Inc(Address, Cardinal(Cursor.ReadPackedInt));
 
-    var Module := DebugInfo.Modules.FindByOffset(Segment, Address);
+    Module := DebugInfo.Modules.FindByOffset(Segment, Address);
     if (Module <> nil) then
     begin
       Name := DemangleMapSymbol(Module, Name);
-      var RelativeOffset := Address - Module.Offset;
-      var Symbol := Module.Symbols.Add(Name, RelativeOffset);
+      RelativeOffset := Address - Module.Offset;
+      Symbol := Module.Symbols.Add(Name, RelativeOffset);
       if (Symbol = nil) then
         Logger.Warning('[%6d] Symbol with duplicate offset ignored: [%.8X] %s', [i, Address, Name])
       else
@@ -513,10 +532,10 @@ begin
   Logger.Info('- Line numbers');
   if (Cursor.Remaining >= 4) then
   begin
-    var LineCount := Cursor.ReadInteger;
-    var LineNumber: Integer := 0;
-    var LineAddr: Cardinal := 0;
-    for var i := 0 to LineCount-1 do
+    LineCount := Cursor.ReadInteger;
+    LineNumber := 0;
+    LineAddr := 0;
+    for i := 0 to LineCount-1 do
     begin
       if (i = 0) then
       begin
@@ -528,11 +547,11 @@ begin
         Inc(LineAddr, Cardinal(Cursor.ReadPackedInt));
       end;
 
-      var Module := DebugInfo.Modules.FindByOffset(Segment, LineAddr);
+      Module := DebugInfo.Modules.FindByOffset(Segment, LineAddr);
       if (Module <> nil) and (Module.SourceFiles.Count > 0) then
       begin
-        var SourceFile := Module.SourceFiles.First;
-        var RelativeOffset := LineAddr - Module.Offset;
+        SourceFile := Module.SourceFiles.First;
+        RelativeOffset := LineAddr - Module.Offset;
         Module.SourceLines.Add(SourceFile, LineNumber, RelativeOffset);
         Logger.Debug('  Line[%6d]: %6d at %.8X, Module: %s', [i, LineNumber, LineAddr, Module.Name]);
       end else
@@ -542,12 +561,12 @@ begin
 
   // Once all symbols are loaded we can derive their sizes from the next
   // symbol's offset (the YAML/PDB writer skips zero-size symbols).
-  for var Module in DebugInfo.Modules do
+  for Module in DebugInfo.Modules do
     Module.Symbols.CalculateSizes;
 
   // Determine max size of the synthesized segment
-  var MaxSegmentSize := Segment.Size;
-  for var Module in DebugInfo.Modules do
+  MaxSegmentSize := Segment.Size;
+  for Module in DebugInfo.Modules do
   begin
     Module.CalculateSize;
     MaxSegmentSize := Max(MaxSegmentSize, Module.Offset + Module.Size);
@@ -560,6 +579,18 @@ end;
 procedure TDebugInfoMadExceptReader.LoadFromStream(Stream: TStream; DebugInfo: TDebugInfo);
 var
   Blob: AnsiString;
+  DescLen: Integer;
+  PayloadLen: Integer;
+  Version: Integer;
+  PayloadStart: Integer; // 1-based index of first payload byte
+  Flags: Integer;
+  Payload: AnsiString;
+  Bf: TBlowfish;
+  Key: AnsiString;
+  UncompressedSize: Int64;
+  Inflated: TBytes;
+  Source: TBytesStream;
+  Zip: TZDecompressionStream;
 begin
   Logger.Info('Reading madExcept map');
 
@@ -567,20 +598,19 @@ begin
   if (Length(Blob) > 0) then
     Stream.ReadBuffer(Blob[1], Length(Blob));
 
-  var DescLen := Length(MadDescriptor);
+  DescLen := Length(MadDescriptor);
   if (Length(Blob) < DescLen + 8) or (Copy(Blob, 1, DescLen) <> MadDescriptor) then
     raise EDebugInfo.Create(sMadNotMadExcept);
 
   // Header fields follow the descriptor (1-based indexing)
-  var PayloadLen := PInteger(@Blob[1 + DescLen])^;
-  var Version := PInteger(@Blob[1 + DescLen + 4])^;
+  PayloadLen := PInteger(@Blob[1 + DescLen])^;
+  Version := PInteger(@Blob[1 + DescLen + 4])^;
 
-  var PayloadStart: Integer; // 1-based index of first payload byte
   case Version of
     2: PayloadStart := 1 + DescLen + 8;
     3:
       begin
-        var Flags := PInteger(@Blob[1 + DescLen + 16])^;
+        Flags := PInteger(@Blob[1 + DescLen + 16])^;
         if (Flags and $1 = 1) then
           raise EDebugInfo.Create(sMadMinDebugInfo);
         PayloadStart := 1 + DescLen + 20;
@@ -591,13 +621,12 @@ begin
 
   Logger.Info('madExcept map version %d, payload %.0n bytes', [Version, PayloadLen * 1.0]);
 
-  var Payload: AnsiString := Copy(Blob, PayloadStart, PayloadLen);
+  Payload := Copy(Blob, PayloadStart, PayloadLen);
   if (Length(Payload) <> PayloadLen) then
     raise EDebugInfo.Create('madExcept payload truncated');
 
   // --- Decrypt (Blowfish, "old" layout, key derived from payload length) --
-  var Bf: TBlowfish;
-  var Key := CalcCryptPassword(Length(Payload));
+  Key := CalcCryptPassword(Length(Payload));
   Bf.InitKey(PByte(Key), Length(Key));
   Bf.DecryptOld(PByte(Payload), Length(Payload));
 
@@ -605,16 +634,15 @@ begin
   if (Length(Payload) <= 12) then
     raise EDebugInfo.Create(sMadDecompressFailed);
 
-  var UncompressedSize := PInt64(@Payload[1])^;
-  var Inflated: TBytes;
+  UncompressedSize := PInt64(@Payload[1])^;
   SetLength(Inflated, UncompressedSize);
 
-  var Source := TBytesStream.Create;
+  Source := TBytesStream.Create;
   try
     Source.WriteBuffer(Payload[1 + 12], Length(Payload) - 12);
     Source.Position := 0;
 
-    var Zip := TZDecompressionStream.Create(Source, -15); // -15 = raw DEFLATE
+    Zip := TZDecompressionStream.Create(Source, -15); // -15 = raw DEFLATE
     try
       if (UncompressedSize > 0) then
         Zip.ReadBuffer(Inflated[0], UncompressedSize);

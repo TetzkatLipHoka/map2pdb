@@ -99,7 +99,7 @@ type
                                         // implementation handles only a block size of 4094 bytes.
 
     FreeBlockMapBlock: Cardinal;        // The index of a block within the file, at which begins a bitfield representing the set
-                                        // of all blocks within the file which are “free” (i.e. the data within that block is not
+                                        // of all blocks within the file which are ï¿½freeï¿½ (i.e. the data within that block is not
                                         // used). See The Free Block Map for more information. Important: FreeBlockMapBlock can
                                         // only be 1 or 2!
 
@@ -107,7 +107,7 @@ type
                                         // the file on disk.
 
     NumDirectoryBytes: Cardinal;        // The size of the stream directory, in bytes. The stream directory contains information
-                                        // about each stream’s size and the set of blocks that it occupies.
+                                        // about each streamï¿½s size and the set of blocks that it occupies.
 
     Unknown: Cardinal;
 
@@ -205,7 +205,7 @@ type
     Version: Cardinal;          // A Value from the PDBStreamVersion enum. While the meaning of this field appears
                                 // to be obvious, in practice we have never observed a value other than VC70, even
                                 // with modern versions of the toolchain, and it is unclear why the other values exist.
-                                // It is assumed that certain aspects of the PDB stream’s layout, and perhaps even
+                                // It is assumed that certain aspects of the PDB streamï¿½s layout, and perhaps even
                                 // that of the other streams, will change if the value is something other than VC70.
 
     Signature: Cardinal;        // A 32-bit time-stamp generated with a call to time() at the time the PDB file is
@@ -228,7 +228,7 @@ type
     VC140               = 20140508,     // Other feature flags may be present
                                         // PDB contains an IPI Stream
 
-    NoTypeMerge         = $4D544F4E,    // Presumably duplicate types can appear in the TPI Stream, although it’s
+    NoTypeMerge         = $4D544F4E,    // Presumably duplicate types can appear in the TPI Stream, although itï¿½s
                                         // unclear why this might happen.
 
     MinimalDebugInfo    = $494E494D     // Program was linked with /DEBUG:FASTLINK
@@ -286,7 +286,7 @@ type
                                         // ensure compatibility with tools which may expect it to be present.
 
     HashAuxStreamIndex: Word;           // Presumably the index of a stream which contains a separate hash table,
-                                        // although this has not been observed in practice and it’s unclear what
+                                        // although this has not been observed in practice and itï¿½s unclear what
                                         // it might be used for.
 
     HashKeySize: Cardinal;              // The size of a hash value (usually 4 bytes).
@@ -470,7 +470,7 @@ type
                                         // this value equal to 0.
 
     PdbFilePathNameIndex: Cardinal;     // The offset in the names buffer of the PDB file containing this
-                                        // module’s symbol information. This has only been observed to be
+                                        // moduleï¿½s symbol information. This has only been observed to be
                                         // non-zero for the special "* Linker *" module.
 
     { Remaining fields are variable length zero terminated strings:
@@ -572,7 +572,7 @@ type
 // This substream defines the mapping from module to the source files that contribute to that module. Since
 // multiple modules can use the same source file (for example, a header file), this substream uses a string table
 // to store each unique file name only once, and then have each module use offsets into the string table rather
-// than embedding the string’s value directly.
+// than embedding the stringï¿½s value directly.
 //
 type
   TFileInfoSubstream = packed record
@@ -601,7 +601,7 @@ type
                                         // An array of NumModules integers, each one containing the number of
                                         // source files which contribute to the module at the specified index.
                                         // While each individual module is limited to 64K contributing source
-                                        // files, the union of all modules’ source files may be greater than
+                                        // files, the union of all modulesï¿½ source files may be greater than
                                         // 64K. The real number of source files is thus computed by summing this
                                         // array. Note that summing this array does not give the number of
                                         // unique source files, only the total number of source file
@@ -645,7 +645,7 @@ type
 // (object file, import library, etc that contributes to the binary this PDB contains debug information about.
 // There is one modi stream for each module, and the mapping between modi stream index and module is contained
 // in the DBI Stream. The modi stream for a single module contains line information for the compiland, as well
-// as all CodeView information for the symbols defined in the compiland. Finally, there is a “global refs”
+// as all CodeView information for the symbols defined in the compiland. Finally, there is a ï¿½global refsï¿½
 // substream which is not well understood.
 //
 type
@@ -656,7 +656,7 @@ type
     { Variable length elements follows:
 
     Symbols: TBytes[SymbolSize-4];      // The CodeView Symbol Substream. SymbolSize is equal to the value of
-                                        // SymByteSize for the corresponding module’s entry in the Module Info
+                                        // SymByteSize for the corresponding moduleï¿½s entry in the Module Info
                                         // Substream of the DBI Stream.
 
     C11LineInfo: TBytes[C11Size];       // A block containing CodeView line information in C11 format. C11Size is
@@ -794,11 +794,14 @@ implementation
 
 
 function HashStringV1(const Str: UTF8String): Cardinal;
+var
+  p: PAnsiChar;
+  Count: integer;
 begin
   Result := 0;
 
-  var p := PAnsiChar(Str);
-  var Count := Length(Str);
+  p := PAnsiChar(Str);
+  Count := Length(Str);
 
   // Hash 4 characters/one DWORD at a time.
   while (Count >= SizeOf(Cardinal)) do
@@ -827,11 +830,14 @@ begin
 end;
 
 function HashStringV2(const Str: UTF8String): Cardinal;
+var
+  p: PAnsiChar;
+  Count: integer;
 begin
   Result := $b170a1bf;
 
-  var p := PAnsiChar(Str);
-  var Count := Length(Str);
+  p := PAnsiChar(Str);
+  Count := Length(Str);
 
   // Hash 4 characters/one DWORD at a time.
   while (Count >= SizeOf(Cardinal)) do

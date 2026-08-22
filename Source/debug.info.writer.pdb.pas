@@ -164,8 +164,10 @@ begin
 end;
 
 function IsAsciiString(const S: UTF8String): boolean;
+var
+  c: AnsiChar;
 begin
-  for var c in S do
+  for c in S do
     if (Ord(c) >= $80) then
       Exit(False);
   Result := True;
@@ -220,7 +222,14 @@ begin
   FBlockSize := ABlockSize;
   FModuleLayout := TModuleLayoutList.Create;
   FNamedStreams := TNamedStreamList.Create;
+{$if (CompilerVersion >= 31.0)} // TStringList.Create(Duplicates, Sorted, CaseSensitive) introduced in 10.1 Berlin
   FStringTable := TStringList.Create(dupIgnore, True, True);
+{$else}
+  FStringTable := TStringList.Create;
+  FStringTable.Duplicates := dupIgnore;
+  FStringTable.Sorted := True;
+  FStringTable.CaseSensitive := True;
+{$ifend}
 
 end;
 
@@ -237,6 +246,18 @@ end;
 function TDebugInfoPdbWriter.WritePDBInfoStream: TMSFStream;
 var
   PDBStreamHeader: TPDBStreamHeader;
+  Buckets: Cardinal;
+  HashTable: TArray<Cardinal>;
+  Index: Integer;
+  Hash: Cardinal;
+  NameOffsets: TArray<Cardinal>;
+  StringSize: Cardinal;
+  BitVectorWords: Cardinal;
+  BitVectorCount: Cardinal;
+  BitVector: Cardinal;
+  BitMask: Cardinal;
+  Bucket: Integer;
+  Index2: Cardinal;
 const
   EmptyBucket = Cardinal(-1);
 begin
@@ -254,16 +275,15 @@ begin
   begin
 
     // Setup hash table with a load factor of 80%
-    var Buckets: Cardinal := Ceil(FNamedStreams.Count * 1.25);
-    var HashTable: TArray<Cardinal>;
+    Buckets := Ceil(FNamedStreams.Count * 1.25);
     SetLength(HashTable, Buckets);
-    for var Index := Low(HashTable) to High(HashTable) do
+    for Index := Low(HashTable) to High(HashTable) do
       HashTable[Index] := EmptyBucket;
 
     // Load hash table
-    for var Index := 0 to FNamedStreams.Count-1 do
+    for Index := 0 to FNamedStreams.Count-1 do
     begin
-      var Hash := HashStringV1(FNamedStreams[Index].Name) mod Buckets;
+      Hash := HashStringV1(FNamedStreams[Index].Name) mod Buckets;
 
       while (HashTable[Hash] <> EmptyBucket) do
         Hash := (Hash + 1) mod Buckets; // Collision - linear probe for next bucket
@@ -305,10 +325,9 @@ begin
     //      data buffer.
 
     // Find the size of all names combined and save their individual offsets
-    var NameOffsets: TArray<Cardinal>;
     SetLength(NameOffsets, FNamedStreams.Count);
-    var StringSize: Cardinal := 0;
-    for var Index := 0 to FNamedStreams.Count-1 do
+    StringSize := 0;
+    for Index := 0 to FNamedStreams.Count-1 do
     begin
       NameOffsets[Index] := StringSize;
       Inc(StringSize, Length(FNamedStreams[Index].Name)+1);
@@ -318,7 +337,7 @@ begin
     Result.Writer.Write(StringSize);
 
     // Write the strings
-    for var Index := 0 to FNamedStreams.Count-1 do
+    for Index := 0 to FNamedStreams.Count-1 do
       Result.Writer.Write(AnsiString(FNamedStreams[Index].Name)); // Zero terminated string
 
     // Hash table:
@@ -368,13 +387,13 @@ begin
     // because the value is a tombstone value) the bit will be unset.
 
     // Write bit vector count
-    var BitVectorWords: Cardinal := (Buckets + SizeOf(Cardinal) * 8 - 1) div (SizeOf(Cardinal) * 8);
+    BitVectorWords := (Buckets + SizeOf(Cardinal) * 8 - 1) div (SizeOf(Cardinal) * 8);
     Result.Writer.Write(BitVectorWords);
 
-    var BitVectorCount: Cardinal := 0;
-    var BitVector: Cardinal := 0;
-    var BitMask: Cardinal := 1;
-    for var Bucket := Low(HashTable) to High(HashTable) do
+    BitVectorCount := 0;
+    BitVector := 0;
+    BitMask := 1;
+    for Bucket := Low(HashTable) to High(HashTable) do
     begin
       if (HashTable[Bucket] <> EmptyBucket) then
         BitVector := BitVector or BitMask;
@@ -409,14 +428,14 @@ begin
     // (always a DWORD), and the second entry is the value. The state of each bucket
     // (valid, empty, deleted) can be determined by examining the present and deleted bit
     // vectors.
-    for var Bucket := Low(HashTable) to High(HashTable) do
+    for Bucket := Low(HashTable) to High(HashTable) do
     begin
-      var Index := HashTable[Bucket];
+      Index2 := HashTable[Bucket];
 
-      if (Index <> EmptyBucket) then
+      if (Index2 <> EmptyBucket) then
       begin
-        Result.Writer.Write(Cardinal(NameOffsets[Index]));
-        Result.Writer.Write(Cardinal(FNamedStreams[Index].Stream.Index));
+        Result.Writer.Write(Cardinal(NameOffsets[Index2]));
+        Result.Writer.Write(Cardinal(FNamedStreams[Index2].Stream.Index));
       end;
       // Empty buckets are not written. See note at top.
       {
@@ -465,10 +484,12 @@ end;
 
 
 function TDebugInfoPdbWriter.EmitTPIStream(Writer: TBinaryBlockWriter): Cardinal;
+var
+  TPIStreamHeader: TTPIStreamHeader;
 begin
   Result := Writer.Position;
 
-  var TPIStreamHeader := Default(TTPIStreamHeader);
+  TPIStreamHeader := Default(TTPIStreamHeader);
   TPIStreamHeader.Version := Ord(TPIStreamVersion.V80);
   TPIStreamHeader.HeaderSize := SizeOf(TPIStreamHeader);
   TPIStreamHeader.TypeIndexBegin := $1000;
@@ -498,6 +519,10 @@ begin
 end;
 
 procedure TDebugInfoPdbWriter.PopulateStringList;
+var
+  SourceFile: TDebugInfoSourceFile;
+  Offset: Integer;
+  Index: Integer;
 begin
 
   // Disable sort order while we bulk insert
@@ -509,7 +534,7 @@ begin
   FStringTable.AddObject('', Pointer(0));
 
   // Add all source file names
-  for var SourceFile in FDebugInfo.SourceFiles do
+  for SourceFile in FDebugInfo.SourceFiles do
     FStringTable.Add(SourceFile.Filename);
 
   // Enable sort order again
@@ -517,8 +542,8 @@ begin
 
   // Precompute the offset each string will have in the string table when
   // we write the string in WritePDBStrings.
-  var Offset := 1; // First entry is an empty string
-  for var Index := 0 to FStringTable.Count-1 do
+  Offset := 1; // First entry is an empty string
+  for Index := 0 to FStringTable.Count-1 do
   begin
     // Store offset in string table for use by TCVFileChecksumEntry.FileNameOffset when
     // writing source files/lines module info.
@@ -528,17 +553,22 @@ begin
 end;
 
 function TDebugInfoPdbWriter.EmitDBISubstreamModules(Writer: TBinaryBlockWriter): Cardinal;
+var
+  ModuleIndex: Integer;
+  Module: TDebugInfoModule;
+  ModuleLayout: TModuleLayout;
+  ModInfo: TModInfo;
 begin
   Result := Writer.Position;
 
-  var ModuleIndex := 0;
-  for var Module in FDebugInfo.Modules do
+  ModuleIndex := 0;
+  for Module in FDebugInfo.Modules do
   begin
 
     // Get precalculated layout values from WriteDBIModuleSymbols
-    var ModuleLayout := FModuleLayout[Module];
+    ModuleLayout := FModuleLayout[Module];
 
-    var ModInfo := Default(TModInfo);
+    ModInfo := Default(TModInfo);
     PopulateDBISectionContribution(ModInfo.SectionContrib, Module);
     ModInfo.SectionContrib.ModuleIndex := ModuleIndex;
 
@@ -569,8 +599,8 @@ begin
 
   // Write "* Linker *" module
   begin
-    var ModInfo := Default(TModInfo);
-    var ModuleLayout := FModuleLayout[FLinkerModule];
+    ModInfo := Default(TModInfo);
+    ModuleLayout := FModuleLayout[FLinkerModule];
     ModuleLayout := FModuleLayout[FLinkerModule];
     ModInfo.SectionContrib.ModuleIndex := ModuleIndex;
     ModInfo.ModuleSymStreamIndex := ModuleLayout.Stream.Index;
@@ -601,13 +631,16 @@ function TDebugInfoPdbWriter.EmitDBISubstreamSectionContributions(Writer: TBinar
     Writer.Write<TSectionContribEntry>(SectionContribEntry);
   end;
 
+var
+  ModuleIndex: Integer;
+  Module: TDebugInfoModule;
 begin
   Result := Writer.Position;
 
   Writer.Write(Cardinal(Ord(SectionContrSubstreamVersion.Ver60)));
 
-  var ModuleIndex := 0;
-  for var Module in FDebugInfo.Modules do
+  ModuleIndex := 0;
+  for Module in FDebugInfo.Modules do
   begin
     EmitDBISectionContribution(Module, ModuleIndex);
     Inc(ModuleIndex);
@@ -637,16 +670,19 @@ function TDebugInfoPdbWriter.EmitDBISubstreamSectionMap(Writer: TBinaryBlockWrit
       Result := Result or Ord(SectionMapEntryFlags.AddressIs32Bit);
   end;
 
+var
+  SectionMapHeader: TSectionMapHeader;
+  SectionMapEntry: TSectionMapEntry;
+  Segment: TDebugInfoSegment;
 begin
   Result := Writer.Position;
 
-  var SectionMapHeader: TSectionMapHeader;
 
   SectionMapHeader.Count := FDebugInfo.Segments.Count + 1; // +1 for the "magic" entry
   SectionMapHeader.LogCount := FDebugInfo.Segments.Count;
   Writer.Write<TSectionMapHeader>(SectionMapHeader);
 
-  var SectionMapEntry := Default(TSectionMapEntry);
+  SectionMapEntry := Default(TSectionMapEntry);
 
   SectionMapEntry.SectionName := $FFFF;
   SectionMapEntry.ClassName := $FFFF;
@@ -654,7 +690,7 @@ begin
   // Note: SectionMapEntry.Offset must be zero!
   // Offsets appears to be relative to this value.
 
-  for var Segment in FDebugInfo.Segments do
+  for Segment in FDebugInfo.Segments do
   begin
     // LLVM assigns a sequential number to the Frame field, starting from 1.
     // It is unclear if we must use a unbroken sequential sequence but
@@ -678,10 +714,12 @@ begin
 end;
 
 function TDebugInfoPdbWriter.EmitDBISubstreamEC(Writer: TBinaryBlockWriter): Cardinal;
+var
+  Strings: TStringList;
 begin
   Result := Writer.Position;
 
-  var Strings := TStringList.Create;
+  Strings := TStringList.Create;
   try
 
     // We don't use the EC substream but emit it so our output matches that of LLVM. Also LLVM
@@ -696,10 +734,20 @@ begin
 end;
 
 function TDebugInfoPdbWriter.EmitDBISubstreamFiles(Writer: TBinaryBlockWriter): Cardinal;
+var
+  FileInfoSubstream: TFileInfoSubstream;
+  i: Integer;
+  Module: TDebugInfoModule;
+  ArrayBookmark: TBinaryBlockWriter.TBlockWriterBookmark;
+  OffsetCount: Integer;
+  OffsetArraySize: Integer;
+  Offsets: TDictionary<TDebugInfoSourceFile, Cardinal>;
+  Offset: Cardinal;
+  SourceFile: TDebugInfoSourceFile;
+  SaveBookmark: TBinaryBlockWriter.TBlockWriterBookmark;
 begin
   Result := Writer.Position;
 
-  var FileInfoSubstream: TFileInfoSubstream;
 
   FileInfoSubstream.NumModules := FDebugInfo.Modules.Count + 1; // +1 for "* Linker *" module
 
@@ -714,24 +762,24 @@ begin
 
   // ModIndices: array[NumModules] of Word;
   // Ignored according to LLVM. LLVM however writes a sequential value to the field.
-  for var i := 0 to FileInfoSubstream.NumModules-1 do
+  for i := 0 to FileInfoSubstream.NumModules-1 do
     Writer.Write(Word(i));
 
   // ModFileCounts: array[NumModules] of Word;
-  for var Module in FDebugInfo.Modules do
+  for Module in FDebugInfo.Modules do
     Writer.Write(Word(Module.SourceFiles.Count));
   Writer.Write(Word(0)); // "* Linker *" module
 
 
   // In order to get the offset values we first skip the offset array, write the
   // strings while saving the offsets, and then go back and write the offset array.
-  var ArrayBookmark := Writer.SaveBookmark;
+  ArrayBookmark := Writer.SaveBookmark;
 
   // Compute the size of the arrays so we can skip them
-  var OffsetCount := 0;
-  for var Module in FDebugInfo.Modules do
+  OffsetCount := 0;
+  for Module in FDebugInfo.Modules do
     Inc(OffsetCount, Module.SourceFiles.Count);
-  var OffsetArraySize := OffsetCount * SizeOf(Cardinal);
+  OffsetArraySize := OffsetCount * SizeOf(Cardinal);
 
   // Skip the offset array
   Writer.Position := Writer.Position + OffsetArraySize;
@@ -740,10 +788,10 @@ begin
   // Write the strings and save the offsets along the way
   // We can index by source file under the assumption that filenames are unique since
   // TDebugInfoSourceFiles enforces this.
-  var Offsets := TDictionary<TDebugInfoSourceFile, Cardinal>.Create(FDebugInfo.SourceFiles.Count);
+  Offsets := TDictionary<TDebugInfoSourceFile, Cardinal>.Create(FDebugInfo.SourceFiles.Count);
   try
 
-    var Offset: Cardinal := 0;
+    Offset := 0;
 
     // Apart from the real file names we write one empty file name for those
     // cases where we don't want a file name output.
@@ -751,7 +799,7 @@ begin
 //    Writer.Write(Byte(0)); // Empty, zero terminated string
 //    Inc(Offset);
 
-    for var SourceFile in FDebugInfo.SourceFiles do
+    for SourceFile in FDebugInfo.SourceFiles do
     begin
 
       // Save offset for this filename
@@ -768,11 +816,11 @@ begin
 
 
     // Go back and write the offset array
-    var SaveBookmark := ArrayBookmark.Restore;
+    SaveBookmark := ArrayBookmark.Restore;
 
     // FileNameOffsets: array[NumSourceFiles] of Cardinal;
-    for var Module in FDebugInfo.Modules do
-      for var SourceFile in Module.SourceFiles do
+    for Module in FDebugInfo.Modules do
+      for SourceFile in Module.SourceFiles do
       begin
         Offset := Offsets[SourceFile];
         Writer.Write(Offset);
@@ -789,10 +837,12 @@ begin
 end;
 
 function TDebugInfoPdbWriter.EmitDBISubstreamDebugHeader(Writer: TBinaryBlockWriter): Cardinal;
+var
+  HeaderType: PDBDbgHeaderType;
 begin
   Result := Writer.Position;
 
-  for var HeaderType := Low(PDBDbgHeaderType) to High(PDBDbgHeaderType) do
+  for HeaderType := Low(PDBDbgHeaderType) to High(PDBDbgHeaderType) do
     if (FLayout.StreamDbgHeaderTypes[HeaderType] <> nil) then
       Writer.Write(FLayout.StreamDbgHeaderTypes[HeaderType].Index)
     else
@@ -802,13 +852,17 @@ begin
 end;
 
 function TDebugInfoPdbWriter.WriteDBIStream: TMSFStream;
+var
+  DBIStreamHeader: TDBIStreamHeader;
+  HeaderBookmark: TBinaryBlockWriter.TBlockWriterBookmark;
+  SaveBookmark: TBinaryBlockWriter.TBlockWriterBookmark;
 begin
   Result := FFiler.FixedStreams[PDBStreamIndex.StreamDBI];
 
   Result.BeginStream;
   begin
 
-    var DBIStreamHeader := Default(TDBIStreamHeader);
+    DBIStreamHeader := Default(TDBIStreamHeader);
 
     DBIStreamHeader.VersionSignature := -1;
     DBIStreamHeader.VersionHeader := Ord(DbiStreamVersion.V70);
@@ -846,7 +900,7 @@ begin
       DBIStreamHeader.Machine := IMAGE_FILE_MACHINE_AMD64;
 
     // Seek past the header. We will write it once the substreams has been written.
-    var HeaderBookmark := Result.Writer.SaveBookmark;
+    HeaderBookmark := Result.Writer.SaveBookmark;
     Result.Writer.Seek(SizeOf(DBIStreamHeader), soCurrent);
 
 
@@ -862,7 +916,7 @@ begin
 
 
     // Now that we have the size of all the substreams and the header is complete we can write it
-    var SaveBookmark := HeaderBookmark.Restore;
+    SaveBookmark := HeaderBookmark.Restore;
     Result.Writer.Write<TDBIStreamHeader>(DBIStreamHeader);
 
     SaveBookmark.Restore;
@@ -953,6 +1007,11 @@ type
   end;
 
 function TGSIHashStreamBuilder.Emit(Writer: TBinaryBlockWriter): Cardinal;
+var
+  GSIHashHeader: TGSIHashHeader;
+  BitCount: Integer;
+  Row: Integer;
+  Bit: Integer;
 begin
   Result := Writer.Position;
 
@@ -960,7 +1019,7 @@ begin
   // https://github.com/microsoft/microsoft-pdb/blob/master/PDB/dbi/gsi.cpp#L590
 
   // Emit header
-  var GSIHashHeader := Default(TGSIHashHeader);
+  GSIHashHeader := Default(TGSIHashHeader);
   GSIHashHeader.VerSignature := GSIHashHeaderSignature;
   GSIHashHeader.VerHdr := GSIHashHeaderVersionV70;
   GSIHashHeader.HrSize := Length(HashRecords) * SizeOf(TPSHashRecord);
@@ -989,9 +1048,9 @@ begin
 
 
     // Verify that number of bits set in bitmap equals number of buckets
-    var BitCount := 0;
-    for var Row := 0 to High(HashBitmap) do
-      for var Bit := 0 to SizeOf(Cardinal)*8-1 do
+    BitCount := 0;
+    for Row := 0 to High(HashBitmap) do
+      for Bit := 0 to SizeOf(Cardinal)*8-1 do
         if (HashBitmap[Row] and (1 shl Bit) <> 0) then
           Inc(BitCount);
     Assert(BitCount = Length(BucketOffsets));
@@ -1026,6 +1085,27 @@ type
   PHashTable = ^THashTable;
   TChainLength = array[0..GSIHashSize-1] of integer;
   PChainLength = ^TChainLength;
+const
+  SizeOfHROffsetCalc = 12; // SizeOf(HROffsetCalc)
+var
+  Index: Integer;
+  HashTable: PHashTable;
+  ChainLength: PChainLength;
+  RecordsAccess: PPublicSymArray;
+  Comparer: IComparer<integer>;
+  Bucket: Word;
+  ChainCount: Integer;
+  MaxChainSize: Integer;
+  Collisions: Integer;
+  CollisionPercent: Double;
+  AverageChain: Double;
+  BucketCursor: Integer;
+  BucketOffsetIndex: Integer;
+  ChainStartOff: Cardinal;
+  BucketIndex: Integer;
+  BitmapRow: Integer;
+  BitmapBit: Integer;
+  ChainIndex: Integer;
 begin
 
   // The reference implementation is GSI1::fWriteHash
@@ -1033,31 +1113,29 @@ begin
 
 
   // Precompute all hash keys.
-  for var Index := 0 to High(Records) do
+  for Index := 0 to High(Records) do
     Records[Index].BucketIndex := HashStringV1(Records[Index].Name) mod GSIHashSize;
 
-  var HashTable: PHashTable;
   New(HashTable); // Use heap because array is too large for stack if we use the large hash table size
   try
 
-    var ChainLength: PChainLength;
     New(ChainLength);
     try
       ChainLength^ := Default(TChainLength);
 
       // Find the size of each bucket chain...
-      for var Index := 0 to High(Records) do
+      for Index := 0 to High(Records) do
         Inc(ChainLength[Records[Index].BucketIndex]);
 
       // ...and then allocate the chains
-      for var Index := 0 to High(ChainLength^) do
+      for Index := 0 to High(ChainLength^) do
         SetLength(HashTable[Index], ChainLength^[Index]);
 
 
       // Populate hash table with Records indices
-      for var Index := 0 to High(Records) do
+      for Index := 0 to High(Records) do
       begin
-        var Bucket := Records[Index].BucketIndex;
+        Bucket := Records[Index].BucketIndex;
 
         // We reuse ChainLength[Bucket] as a chain index which means that
         // we fill the chain from the end (not that it matters).
@@ -1072,7 +1150,7 @@ begin
 
 
     // Local var so we can access the param in the comparer
-    var RecordsAccess: PPublicSymArray := @Records;
+    RecordsAccess := @Records;
 
     // Within the bucket chains, sort each bucket by memcmp of the symbol's name.
     // It's important that we use the same sorting algorithm as is used by the
@@ -1081,12 +1159,15 @@ begin
     // The algorithm used here corresponds to the function
     // caseInsensitiveComparePchPchCchCch in the reference implementation.
     // See https://github.com/Microsoft/microsoft-pdb/blob/master/PDB/dbi/gsi.cpp, line 401
-    var Comparer := IComparer<integer>(
+    Comparer := IComparer<integer>(
       function(const A, B: integer): integer
+      var
+        L: PPublicSym32ex;
+        R: PPublicSym32ex;
       begin
         // Pointers to records in order to avoid invoking a copy of the record
-        var L: PPublicSym32ex := @RecordsAccess^[A];
-        var R: PPublicSym32ex := @RecordsAccess^[B];
+        L := @RecordsAccess^[A];
+        R := @RecordsAccess^[B];
 
         Result := GsiRecordCmp(L.Name, R.Name);
 
@@ -1104,10 +1185,10 @@ begin
         end;
       end);
 
-    var ChainCount := 0;
-    var MaxChainSize := 0;
-    var Collisions := 0;
-    for var Index := 0 to High(HashTable^) do
+    ChainCount := 0;
+    MaxChainSize := 0;
+    Collisions := 0;
+    for Index := 0 to High(HashTable^) do
     begin
       if (Length(HashTable[Index]) = 0) then
         continue;
@@ -1123,8 +1204,6 @@ begin
 
     if (DebugInfoLogLevel <= lcDebug) then
     begin
-      var CollisionPercent: Double;
-      var AverageChain: Double;
       if (Length(Records) > 0) then
       begin
         CollisionPercent := Collisions / Length(Records) * 100;
@@ -1143,11 +1222,10 @@ begin
     SetLength(HashRecords, Length(Records));
     SetLength(BucketOffsets, ChainCount);
     HashBitmap := Default(THashBitmap);
-    var BucketCursor := 0;
-    var BucketOffsetIndex := 0;
-    var ChainStartOff: Cardinal := 0;
-    const SizeOfHROffsetCalc = 12; // SizeOf(HROffsetCalc)
-    for var BucketIndex := 0 to High(HashTable^) do
+    BucketCursor := 0;
+    BucketOffsetIndex := 0;
+    ChainStartOff := 0;
+    for BucketIndex := 0 to High(HashTable^) do
     begin
       if (Length(HashTable[BucketIndex]) = 0) then
         continue;
@@ -1159,13 +1237,13 @@ begin
       Inc(BucketOffsetIndex);
 
       // Mark bucket in bitmap
-      var BitmapRow := BucketIndex div 32;
-      var BitmapBit := BucketIndex mod 32;
+      BitmapRow := BucketIndex div 32;
+      BitmapBit := BucketIndex mod 32;
       HashBitmap[BitmapRow] := HashBitmap[BitmapRow] or (1 shl BitmapBit);
 
-      for var ChainIndex := 0 to High(HashTable[BucketIndex]) do
+      for ChainIndex := 0 to High(HashTable[BucketIndex]) do
       begin
-        var Index := HashTable[BucketIndex][ChainIndex];
+        Index := HashTable[BucketIndex][ChainIndex];
 
         // The reference implementation states:
         //   "ptrs in the stream are offsets biased by one to distinguish null ptrs/offsets"
@@ -1189,6 +1267,9 @@ procedure TDebugInfoPdbWriter.WriteSymbols;
 var
   Publics: TPublicSymArray;
   Globals: TList<TCVSymbol>;
+  PublicsSize: Cardinal;
+  PublicsHashStreamBuilder: TGSIHashStreamBuilder;
+  GlobalsHashStreamBuilder: TGSIHashStreamBuilder;
 
   procedure BuildPublicsHash(var HashStreamBuilder: TGSIHashStreamBuilder);
   begin
@@ -1196,6 +1277,10 @@ var
   end;
 
   procedure BuildGlobalsHash(var HashStreamBuilder: TGSIHashStreamBuilder; RecordZeroOffset: Cardinal);
+  var
+    Records: TPublicSymArray;
+    SymOffset: Cardinal;
+    Index: Integer;
   begin
     // Build up a list of globals to be bucketed. Use the TPublicSym32ex data
     // structure for this purpose, even though these are global records, not
@@ -1204,12 +1289,11 @@ var
     // - SymOffset
     // - BucketIdx
     // The dead fields are Offset, Segment, and Flags.
-    var Records: TPublicSymArray;
     SetLength(Records, Globals.Count);
 
-    var SymOffset := RecordZeroOffset;
+    SymOffset := RecordZeroOffset;
 
-    for var Index := 0 to Globals.Count-1 do
+    for Index := 0 to Globals.Count-1 do
     begin
       Records[Index].Name := Globals[Index].Name;
       Records[Index].BucketIndex := 0;
@@ -1222,20 +1306,27 @@ var
   end;
 
   function EmitPublics(Writer: TBinaryBlockWriter; var Records: TPublicSymArray): Cardinal;
+  var
+    Offset: Cardinal;
+    Index: Integer;
+    Symbol: TPublicSym32ex;
+    NameSize: Integer;
+    Size: Word;
+    PublicSym32: TCVPublicSym32;
   begin
     Result := Writer.Position;
 
-    var Offset: Cardinal := 0;
+    Offset := 0;
 
-    for var Index := 0 to High(Records) do
+    for Index := 0 to High(Records) do
     begin
-      var Symbol := Records[Index];
+      Symbol := Records[Index];
 
       // Ensure name doesn't make symbol too big
-      var NameSize := Min(Length(Symbol.Name), CVMaxRecordLength - SizeOf(TCVPublicSym32) - 1); // -1 is zero termination
-      var Size: Word := AlignTo(SizeOf(TCVPublicSym32) + NameSize + 1, 4); // +1 is zero termination
+      NameSize := Min(Length(Symbol.Name), CVMaxRecordLength - SizeOf(TCVPublicSym32) - 1); // -1 is zero termination
+      Size := AlignTo(SizeOf(TCVPublicSym32) + NameSize + 1, 4); // +1 is zero termination
 
-      var PublicSym32: TCVPublicSym32 := Symbol.PublicSym32;
+      PublicSym32 := Symbol.PublicSym32;
       PublicSym32.Header.RecordLen := Size - SizeOf(Word); // Exclude SizeOf(RecordKind) from RecordLen
       Assert(PublicSym32.Header.RecordKind = Ord(CVSymbolRecordKind.S_PUB32));
 
@@ -1266,10 +1357,12 @@ var
   end;
 
   function EmitGlobals(Writer: TBinaryBlockWriter; Records: TList<TCVSymbol>): Cardinal;
+  var
+    Symbol: TCVSymbol;
   begin
     Result := Writer.Position;
 
-    for var Symbol in Records do
+    for Symbol in Records do
     begin
       // TODO : The following is just a guess.
       Writer.Write<TCVTypeRecordHeader>(Symbol.Header);
@@ -1290,11 +1383,17 @@ var
   end;
 
   function EmitPublicsStream(Writer: TBinaryBlockWriter; const HashStreamBuilder: TGSIHashStreamBuilder; const Records: TPublicSymArray): Cardinal;
+  var
+    Header: TPublicsStreamHeader;
+    Size: Cardinal;
+    AddressMap: TArray<Cardinal>;
+    Index: Integer;
+    RecordsAccess: PPublicSymArray;
   begin
     Result := Writer.Position;
 
     // Emit header
-    var Header := Default(TPublicsStreamHeader);
+    Header := Default(TPublicsStreamHeader);
 
     Header.SymHash := HashStreamBuilder.CalculateSerializedLength;
     Header.AddrMap := Length(Records) * SizeOf(Cardinal);
@@ -1306,21 +1405,20 @@ var
 
 
     // Emit hash table
-    var Size := HashStreamBuilder.Emit(Writer);
+    Size := HashStreamBuilder.Emit(Writer);
 
     Assert(Size = Header.SymHash);
 
 
     // Build an array of indices into the Publics array, and sort it by
     // address.
-    var AddressMap: TArray<Cardinal>;
     SetLength(AddressMap, Length(Records));
 
-    for var Index := 0 to High(Records) do
+    for Index := 0 to High(Records) do
       AddressMap[Index] := Index;
 
     // Local var so we can access the param in the comparer
-    var RecordsAccess: PPublicSymArray := @Records;
+    RecordsAccess := @Records;
 
     // Sort address map by Segment.Index, Symbol.Offset, Symbol.Name
     // PSGSI1::sortBuf
@@ -1329,10 +1427,13 @@ var
     //   https://github.com/microsoft/microsoft-pdb/blob/master/PDB/dbi/gsi.cpp#L1476
     TArray.Sort<Cardinal>(AddressMap, IComparer<Cardinal>(
       function(const A, B: Cardinal): integer
+      var
+        SymA: PPublicSym32ex;
+        SymB: PPublicSym32ex;
       begin
         // Pointers to records in order to avoid invoking a copy of the record
-        var SymA: PPublicSym32ex := @RecordsAccess^[A];
-        var SymB: PPublicSym32ex := @RecordsAccess^[B];
+        SymA := @RecordsAccess^[A];
+        SymB := @RecordsAccess^[B];
 
         Result := integer(SymA.PublicSym32.Segment) - integer(SymB.PublicSym32.Segment);
 
@@ -1353,7 +1454,7 @@ var
 
 
     // Rewrite the public symbol indices into symbol offsets.
-    for var Index := 0 to High(AddressMap) do
+    for Index := 0 to High(AddressMap) do
       //
       // The reference implementation states:
       //   "ptrs in the stream are offsets biased by one to distinguish null ptrs/offsets"
@@ -1376,17 +1477,22 @@ var
   end;
 
   procedure LoadSymbols;
+  var
+    Count: Integer;
+    Module: TDebugInfoModule;
+    Index: Integer;
+    Symbol: TDebugInfoSymbol;
   begin
-    var Count := 0;
-    for var Module in FDebugInfo.Modules do
+    Count := 0;
+    for Module in FDebugInfo.Modules do
       Inc(Count, Module.Symbols.Count);
 
     SetLength(Publics, Count);
 
     // Populate symbol array
-    var Index := 0;
-    for var Module in FDebugInfo.Modules do
-      for var Symbol in Module.Symbols do
+    Index := 0;
+    for Module in FDebugInfo.Modules do
+      for Symbol in Module.Symbols do
       begin
         Publics[Index].PublicSym32.Header.RecordKind := Ord(CVSymbolRecordKind.S_PUB32);
         Publics[Index].PublicSym32.Segment := Module.Segment.Index;
@@ -1413,7 +1519,6 @@ begin
 
 
     // Emit symbols
-    var PublicsSize: Cardinal;
     FLayout.StreamDBISymbols.BeginStream;
     begin
       // Write public symbol records first, followed by global symbol records.  This
@@ -1425,8 +1530,6 @@ begin
 
 
     // Build Publics and Globals hash tables
-    var PublicsHashStreamBuilder: TGSIHashStreamBuilder;
-    var GlobalsHashStreamBuilder: TGSIHashStreamBuilder;
 
     BuildPublicsHash(PublicsHashStreamBuilder);
     BuildGlobalsHash(GlobalsHashStreamBuilder, PublicsSize);
@@ -1490,12 +1593,14 @@ procedure TDebugInfoPdbWriter.WriteOptionalStreams;
     *)
   end;
 
+var
+  HeaderType: PDBDbgHeaderType;
+  Stream: TMSFStream;
 begin
   // Note: We don't provide all of the optional debug streams yet, and likely never will
 
-  for var HeaderType := Low(PDBDbgHeaderType) to High(PDBDbgHeaderType) do
+  for HeaderType := Low(PDBDbgHeaderType) to High(PDBDbgHeaderType) do
   begin
-    var Stream: TMSFStream;
 
     case HeaderType of
 
@@ -1513,8 +1618,10 @@ end;
 procedure TDebugInfoPdbWriter.WriteDBIModuleSymbols;
 
   procedure DoEmitModuleSymbols(Module: TDebugInfoModule);
+  var
+    ModuleLayout: TModuleLayout;
   begin
-    var ModuleLayout := Default(TModuleLayout);
+    ModuleLayout := Default(TModuleLayout);
 
     ModuleLayout.Stream := FFiler.AllocateStream;
     ModuleLayout.Stream.BeginStream;
@@ -1529,8 +1636,10 @@ procedure TDebugInfoPdbWriter.WriteDBIModuleSymbols;
     FModuleLayout.Add(Module, ModuleLayout);
   end;
 
+var
+  Module: TDebugInfoModule;
 begin
-  for var Module in FDebugInfo.Modules do
+  for Module in FDebugInfo.Modules do
     DoEmitModuleSymbols(Module);
 
   // Emit special "* Linker *" module
@@ -1541,10 +1650,14 @@ end;
 function TDebugInfoPdbWriter.EmitModuleSymbols(Writer: TBinaryBlockWriter; Module: TDebugInfoModule): Cardinal;
 var
   StartOffset: Int64;
+  Segment: TDebugInfoSegment;
+  Symbol: TDebugInfoSymbol;
 
   procedure EmitSectionSymbol(Section: TDebugInfoSegment);
+  var
+    Symbol: TCVTypeSectionSym;
   begin
-    var Symbol := Default(TCVTypeSectionSym);
+    Symbol := Default(TCVTypeSectionSym);
 
     Symbol.Header.RecordLen := AlignTo(SizeOf(Symbol) + Length(Section.Name) + 1, 4) - SizeOf(Symbol.Header.RecordLen);
     Symbol.Header.RecordKind := Ord(CVSymbolRecordKind.S_SECTION);
@@ -1564,8 +1677,10 @@ var
   procedure EmitLinkerSymbol;
   const
     sLinkerName: AnsiString = 'map2pdb';
+  var
+    Symbol: TCVTypeCompile3Sym;
   begin
-    var Symbol := Default(TCVTypeCompile3Sym);
+    Symbol := Default(TCVTypeCompile3Sym);
 
     Symbol.Header.RecordLen := AlignTo(SizeOf(Symbol) + Length(sLinkerName) + 1, 4) - SizeOf(Symbol.Header.RecordLen) ;
     Symbol.Header.RecordKind := Ord(CVSymbolRecordKind.S_COMPILE3);
@@ -1595,8 +1710,10 @@ var
   end;
 
   procedure EmitObjNameSymbol;
+  var
+    Symbol: TCVTypeObjNameSym;
   begin
-    var Symbol := Default(TCVTypeObjNameSym);
+    Symbol := Default(TCVTypeObjNameSym);
 
     Symbol.Header.RecordLen := AlignTo(SizeOf(Symbol) + Length(Module.Name) + 1, 4) - SizeOf(Symbol.Header.RecordLen);
     Symbol.Header.RecordKind := Ord(CVSymbolRecordKind.S_OBJNAME);
@@ -1609,8 +1726,10 @@ var
   end;
 
   procedure EmitProcSymbol(ASymbol: TDebugInfoSymbol);
+  var
+    Symbol: TCVProcSym;
   begin
-    var Symbol := Default(TCVProcSym);
+    Symbol := Default(TCVProcSym);
 
     Symbol.Header.RecordLen := AlignTo(SizeOf(Symbol) + Length(ASymbol.Name) + 1, 4) - SizeOf(Symbol.Header.RecordLen);
     Symbol.Header.RecordKind := Ord(CVSymbolRecordKind.S_GPROC32);
@@ -1637,8 +1756,10 @@ var
   end;
 
   procedure EmitEndSymbol;
+  var
+    Symbol: TCVScopeEndSym;
   begin
-    var Symbol := Default(TCVScopeEndSym);
+    Symbol := Default(TCVScopeEndSym);
 
     Symbol.Header.RecordLen := AlignTo(SizeOf(Symbol), 4) - SizeOf(Symbol.Header.RecordLen);
     Symbol.Header.RecordKind := Ord(CVSymbolRecordKind.S_END);
@@ -1663,7 +1784,7 @@ begin
     EmitLinkerSymbol;
 
     // Emit S_SECTION for all segments
-    for var Segment in FDebugInfo.Segments do
+    for Segment in FDebugInfo.Segments do
       EmitSectionSymbol(Segment);
 
   end else
@@ -1674,7 +1795,7 @@ begin
     // if S_GPROC32 symbols are emitted for all the symbols in the module, then
     // VTune will use the name specified in the S_GPROC32 symbol. Otherwise it
     // will use the S_PUB32 symbol.
-    for var Symbol in Module.Symbols do
+    for Symbol in Module.Symbols do
     begin
       EmitProcSymbol(Symbol);
       EmitEndSymbol;
@@ -1697,22 +1818,31 @@ end;
 function TDebugInfoPdbWriter.EmitStringTable(Writer: TBinaryBlockWriter; Strings: TStrings): Cardinal;
 const
   EmptyBucket: Cardinal = 0;
+var
+  Buckets: Cardinal;
+  HashTable: TArray<Cardinal>;
+  Index: Integer;
+  StringTableHeader: TPDBStringTableHeader;
+  Collisions: Integer;
+  Filename: UTF8String;
+  Hash: Cardinal;
+  CollisionPercent: Double;
+  Filename2: string;
 begin
   Result := Writer.Position;
 
   // Setup hash table with a load factor of 80%
-  var Buckets: Cardinal := Ceil(FStringTable.Count * 1.25) + 1; // +1 because we have reserved slot 0
+  Buckets := Ceil(FStringTable.Count * 1.25) + 1; // +1 because we have reserved slot 0
   // It seems LLVM uses a factor of 1.75 (load factor 57%) here instead of 1.25
   //var Buckets: Cardinal := Ceil(Strings.Count * 1.75) + 1; // +1 because we have reserved slot 0
 
-  var HashTable: TArray<Cardinal>;
   SetLength(HashTable, Buckets);
-  for var Index := Low(HashTable) to High(HashTable) do
+  for Index := Low(HashTable) to High(HashTable) do
     HashTable[Index] := EmptyBucket;
 
 
   // Header
-  var StringTableHeader := Default(TPDBStringTableHeader);
+  StringTableHeader := Default(TPDBStringTableHeader);
   StringTableHeader.Signature := PDBStringTableSignature;
   // LLVM claim that they only support V2 hashing but llvm-pdbutil uses V1 here. Our implementation
   // supports both.
@@ -1724,12 +1854,11 @@ begin
 
   // Sum size of all source file names across all modules and populate hash
   // table while we do it
-  var Collisions := 0;
-  for var Index := 0 to Strings.Count-1 do
+  Collisions := 0;
+  for Index := 0 to Strings.Count-1 do
   begin
-    var Filename := UTF8String(Strings[Index]);
+    Filename := UTF8String(Strings[Index]);
 
-    var Hash: Cardinal;
     if (StringTableHeader.HashVersion = 1) then
       Hash := HashStringV1(Filename) mod Buckets
     else
@@ -1752,7 +1881,6 @@ begin
 
   if (DebugInfoLogLevel <= lcDebug) then
   begin
-    var CollisionPercent: Double;
     if (Strings.Count > 0) then
       CollisionPercent := Collisions / Strings.Count * 100
     else
@@ -1767,8 +1895,8 @@ begin
 
   // Emit names of all source files across all modules
   Writer.Write(Byte(0)); // First the empty string
-  for var Filename in Strings do
-    Writer.Write(Filename);
+  for Filename2 in Strings do
+    Writer.Write(Filename2);
 
 
   // Emit hash table
@@ -1786,11 +1914,13 @@ end;
 function TDebugInfoPdbWriter.EmitSubsectionC13SourceFileLines(Writer: TBinaryBlockWriter; Module: TDebugInfoModule): Cardinal;
 
   function EmitSourceFileHeader(SourceFile: TDebugInfoSourceFile; SourceFileOffset: Cardinal; LineCount: Cardinal): Cardinal;
+  var
+    Header: TCVLineBlockFragmentHeader;
   begin
     Result := Writer.Position;
 
     // Emit header
-    var Header := Default(TCVLineBlockFragmentHeader);
+    Header := Default(TCVLineBlockFragmentHeader);
     Header.NameIndex := SourceFileOffset;
     Header.NumLines := LineCount;
     Header.BlockSize := SizeOf(TCVLineBlockFragmentHeader) + Header.NumLines * SizeOf(TCVLineNumberEntry);
@@ -1802,6 +1932,24 @@ function TDebugInfoPdbWriter.EmitSubsectionC13SourceFileLines(Writer: TBinaryBlo
 
 type
   TSourceLineList = TList<TDebugInfoSourceLine>;
+var
+  Header: TCVLineFragmentHeader;
+  SourceFileOffsets: TDictionary<TDebugInfoSourceFile, Cardinal>;
+  SourceFileIndex: Cardinal;
+  SourceFile: TDebugInfoSourceFile;
+  Lines: TSourceLineList;
+  SourceLine: TDebugInfoSourceLine;
+  SourceGroups: TObjectList<TSourceLineList>;
+  SymbolOffsets: TList<TDebugInfoOffset>;
+  Symbol: TDebugInfoSymbol;
+  Group: TSourceLineList;
+  NextSymbolOffset: TDebugInfoOffset;
+  SymbolOffsetIndex: Integer;
+  GroupComparer: IComparer<TDebugInfoSourceLine>;
+  SourceFileOffset: Cardinal;
+  LineCount: Cardinal;
+  Line: TCVLineNumberEntry;
+  SourceFilePair: TPair<TDebugInfoSourceFile, Cardinal>;
 begin
   if (Module is TDebugInfoLinkerModule) then
     Exit(0);
@@ -1810,7 +1958,6 @@ begin
 
 
   // Module header
-  var Header: TCVLineFragmentHeader;
   Header.RelocOffset := Module.Offset;
   Header.RelocSegment := Module.Segment.Index;
   Header.Flags := Ord(CVLineFragmentFlags.LF_None); // No columns
@@ -1819,10 +1966,10 @@ begin
   Writer.Write<TCVLineFragmentHeader>(Header);
 
   // Create a list of source file offsets
-  var SourceFileOffsets := TDictionary<TDebugInfoSourceFile, Cardinal>.Create(Module.SourceFiles.Count);
+  SourceFileOffsets := TDictionary<TDebugInfoSourceFile, Cardinal>.Create(Module.SourceFiles.Count);
   try
-    var SourceFileIndex: Cardinal := 0;
-    for var SourceFile in Module.SourceFiles do
+    SourceFileIndex := 0;
+    for SourceFile in Module.SourceFiles do
     begin
       // The value is an offset into the checksum array written in EmitSubsectionFileChecksums.
       // We can calculate the offset, instead of having to look it up in a shared list, because
@@ -1832,11 +1979,11 @@ begin
       Inc(SourceFileIndex);
     end;
 
-    var Lines := TSourceLineList.Create;
+    Lines := TSourceLineList.Create;
     try
 
       // Collect all source lines...
-      for var SourceLine in Module.SourceLines do
+      for SourceLine in Module.SourceLines do
         Lines.Add(SourceLine);
 
       // ...and order them by offset
@@ -1855,24 +2002,24 @@ begin
         end));
 
       // Group lines by source file and order the groups by line number
-      var SourceGroups := TObjectList<TSourceLineList>.Create(True);
+      SourceGroups := TObjectList<TSourceLineList>.Create(True);
       try
 
-        var SymbolOffsets := TList<TDebugInfoOffset>.Create;
+        SymbolOffsets := TList<TDebugInfoOffset>.Create;
         try
           // Apparently each symbol within the module must be at the start of a group.
           // Collect a list of all symbol offsets for the module.
           SymbolOffsets.Capacity := Module.Symbols.Count;
-          for var Symbol in Module.Symbols do // Already ordered by offset
+          for Symbol in Module.Symbols do // Already ordered by offset
             SymbolOffsets.Add(Symbol.Offset);
 
-          var SourceFile: TDebugInfoSourceFile := nil;
-          var Group: TSourceLineList := nil;
-          var NextSymbolOffset: TDebugInfoOffset := 0;
-          var SymbolOffsetIndex := 0;
+          SourceFile := nil;
+          Group := nil;
+          NextSymbolOffset := 0;
+          SymbolOffsetIndex := 0;
 
           // Group lines by source file
-          for var SourceLine in Lines do
+          for SourceLine in Lines do
           begin
             // If line offset has passed, or is at, a symbol offset then start a new group
             // and get the next symbol offset.
@@ -1909,7 +2056,7 @@ begin
         FreeAndNil(Lines);
 
         // Within each group, order the lines by offset
-        var GroupComparer: IComparer<TDebugInfoSourceLine> := IComparer<TDebugInfoSourceLine>(
+        GroupComparer := IComparer<TDebugInfoSourceLine>(
           function(const A, B: TDebugInfoSourceLine): integer
           begin
             if (A.Offset < B.Offset) then
@@ -1921,13 +2068,13 @@ begin
               Result := 0;
           end);
 
-        for var Group in SourceGroups do
+        for Group in SourceGroups do
           Group.Sort(GroupComparer);
 
         // Process lines in blocks of source file
-        var SourceFileOffset: Cardinal := 0;
-        var LineCount: Cardinal := 0;
-        for var Group in SourceGroups do
+        SourceFileOffset := 0;
+        LineCount := 0;
+        for Group in SourceGroups do
         begin
           Assert(Group.Count > 0);
 
@@ -1935,9 +2082,8 @@ begin
           EmitSourceFileHeader(Group[0].SourceFile, SourceFileOffsets[Group[0].SourceFile], Group.Count);
 
           // Emit source lines. They *must* be ordered by offset.
-          for var SourceLine in Group do
+          for SourceLine in Group do
           begin
-            var Line: TCVLineNumberEntry;
             Line.Offset := SourceLine.Offset; // Line.Offset is relative to TCVLineFragmentHeader.RelocOffset (Module.Offset)
             Line.Flags := Cardinal(SourceLine.LineNumber or Ord(CVLineMask.StatementFlag));
             Writer.Write<TCVLineNumberEntry>(Line);
@@ -1959,11 +2105,11 @@ begin
     // We do this by iterating the source lines and remove the corresponding source file entries
     // from the file offset list. The remaining entries must be for the source files that have
     // source lines associated.
-    for var SourceLine in Module.SourceLines do
+    for SourceLine in Module.SourceLines do
       SourceFileOffsets.Remove(SourceLine.SourceFile);
 
     // Emit headers for empty source files
-    for var SourceFilePair in SourceFileOffsets do
+    for SourceFilePair in SourceFileOffsets do
       EmitSourceFileHeader(SourceFilePair.Key, SourceFilePair.Value, 0);
 
   finally
@@ -1976,16 +2122,19 @@ end;
 function TDebugInfoPdbWriter.EmitSubsectionFileChecksums(Writer: TBinaryBlockWriter; Module: TDebugInfoModule): Cardinal;
 
   function EmitSourceFileChecksum(SourceFile: TDebugInfoSourceFile): Cardinal;
+  var
+    FileIndex: Integer;
+    Header: TCVFileChecksumEntryHeader;
   begin
     Result := Writer.Position;
 
     // Find the source filename in the string table so we can get the offset
     // of the name in the stringlist.
-    var FileIndex := FStringTable.IndexOf(SourceFile.Filename);
+    FileIndex := FStringTable.IndexOf(SourceFile.Filename);
     Assert(FileIndex <> -1);
 
     // Emit header
-    var Header := Default(TCVFileChecksumEntryHeader);
+    Header := Default(TCVFileChecksumEntryHeader);
     Header.FileNameOffset := Cardinal(FStringTable.Objects[FileIndex]);
     Header.ChecksumSize := 0;
     Header.ChecksumKind := Ord(FileChecksumKind.None);
@@ -1997,6 +2146,8 @@ function TDebugInfoPdbWriter.EmitSubsectionFileChecksums(Writer: TBinaryBlockWri
     Result := Writer.Position - Result;
   end;
 
+var
+  SourceFile: TDebugInfoSourceFile;
 begin
   if (Module is TDebugInfoLinkerModule) then
     Exit(0);
@@ -2004,7 +2155,7 @@ begin
   Result := Writer.Position;
 
   // Each source file of the module
-  for var SourceFile in Module.SourceFiles do
+  for SourceFile in Module.SourceFiles do
     EmitSourceFileChecksum(SourceFile);
 
   Result := Writer.Position - Result;
@@ -2015,16 +2166,21 @@ type
   TSubSectionEmitter = reference to function(Writer: TBinaryBlockWriter; Module: TDebugInfoModule): Cardinal;
 
   function EmitSubsection(Kind: DebugSubsectionKind; SubSectionEmitter: TSubSectionEmitter): Cardinal;
+  var
+    HeaderBookmark: TBinaryBlockWriter.TBlockWriterBookmark;
+    DataSize: Cardinal;
+    SaveBookmark: TBinaryBlockWriter.TBlockWriterBookmark;
+    SubsectionHeader: TCVDebugSubsectionHeader;
   begin
     Result := Writer.Position;
 
     // Write subsection data then go back and write header
-    var HeaderBookmark := Writer.SaveBookmark;
+    HeaderBookmark := Writer.SaveBookmark;
     Writer.Position := Writer.Position + SizeOf(TCVDebugSubsectionHeader);
 
 
     // Emit subsection
-    var DataSize := SubSectionEmitter(Writer, Module);
+    DataSize := SubSectionEmitter(Writer, Module);
     Assert(DataSize = Writer.Position - HeaderBookmark.Position - SizeOf(TCVDebugSubsectionHeader));
 
     if (DataSize = 0) then
@@ -2037,9 +2193,9 @@ type
 
 
     // Go back and write subsection header
-    var SaveBookmark := HeaderBookmark.Restore;
+    SaveBookmark := HeaderBookmark.Restore;
 
-    var SubsectionHeader := Default(TCVDebugSubsectionHeader);
+    SubsectionHeader := Default(TCVDebugSubsectionHeader);
     SubsectionHeader.Kind := Ord(Kind);
     SubsectionHeader.Length := AlignTo(DataSize, 4);
     Writer.Write<TCVDebugSubsectionHeader>(SubsectionHeader);
@@ -2049,10 +2205,12 @@ type
     Result := Writer.Position - Result;
   end;
 
+var
+  ModiStream: TModiStream;
 begin
   Result := Writer.Position;
 
-  var ModiStream := Default(TModiStream);
+  ModiStream := Default(TModiStream);
   ModiStream.Signature := Ord(CVSignature.CV_SIGNATURE_C13);
   Writer.Write<TModiStream>(ModiStream);
 
@@ -2187,10 +2345,11 @@ end;
 //
 // -----------------------------------------------------------------------------
 function TDebugInfoPdbWriter.TNamedStreamList.Add(const Name: UTF8String; Stream: TMSFStream): integer;
+var
+  Entry: TNamedStreamEntry;
 begin
   Assert(not ReadOnly);
 
-  var Entry: TNamedStreamEntry;
 
   Entry.Name := Name;
   Entry.Stream := Stream;

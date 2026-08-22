@@ -985,6 +985,10 @@ var
   CachedNameIndex: integer = -1;
 
 class function TCVSymbol.Name(AKind: CVSymbolRecordKind): UTF8String;
+var
+  L: integer;
+  H: integer;
+  mid: integer;
 begin
   // Well, this sucks!
   // E2134 Type 'TCVSymbolRecordKind' has no type info
@@ -996,12 +1000,12 @@ begin
     Exit(SymbolTypeNames[CachedNameIndex].Name);
 
   // Binary search by Kind to get Name
-  var L := Low(SymbolTypeNames);
-  var H := High(SymbolTypeNames);
+  L := Low(SymbolTypeNames);
+  H := High(SymbolTypeNames);
 
   while (L <= H) do
   begin
-    var mid := L + (H - L) shr 1;
+    mid := L + (H - L) shr 1;
 
     if (AKind < SymbolTypeNames[mid].Value) then
       H := mid - 1

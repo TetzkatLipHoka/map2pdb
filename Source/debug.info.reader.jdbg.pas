@@ -208,12 +208,14 @@ end;
 //
 // -----------------------------------------------------------------------------
 class function TDebugInfoJdbgReader.ReadString(const Header: PJDBGHeader; Offset: Cardinal): string;
+var
+  p: PAnsiChar;
 begin
   if (Offset = 0) then
     Result := ''
   else
   begin
-    var p := PAnsiChar(PByte(Header) + Header.Words + Offset - 1);
+    p := PAnsiChar(PByte(Header) + Header.Words + Offset - 1);
     Result := DecodeNameString(p);
   end;
 end;
@@ -221,13 +223,14 @@ end;
 // -----------------------------------------------------------------------------
 
 procedure TDebugInfoJdbgReader.LoadFromStream(Stream: TStream; DebugInfo: TDebugInfo);
+var
+  OwnedStream: TMemoryStream;
+  MemoryStream: TMemoryStream;
 begin
   Logger.Info('Reading JDBG file');
 
-  var OwnedStream: TMemoryStream := nil;
+  OwnedStream := nil;
   try
-
-    var MemoryStream: TMemoryStream;
 
     if (not (Stream is TMemoryStream)) or (Stream.Position <> 0) then
     begin
@@ -249,27 +252,35 @@ end;
 // -----------------------------------------------------------------------------
 
 procedure TDebugInfoJdbgReader.LoadModules(const Header: PJDBGHeader; DebugInfo: TDebugInfo; Segment: TDebugInfoSegment);
+var
+  Offset: TDebugInfoOffset;
+  NameOffset: integer;
+  i: integer;
+  Data: pointer;
+  Size: integer;
+  DoContinue: Boolean;
+  NameDelta: integer;
+  Name: string;
+  Module: TDebugInfoModule;
 begin
   Logger.Info('- Modules');
 
-  var Offset: TDebugInfoOffset := 0;
-  var NameOffset: integer := 0;
-  var i := 0;
+  Offset := 0;
+  NameOffset := 0;
+  i := 0;
 
-  var Data: pointer := PByte(Header) + Header.Units;
+  Data := PByte(Header) + Header.Units;
 
-  var Size: integer;
-  var DoContinue := ReadValue(Data, Size);
+  DoContinue := ReadValue(Data, Size);
   while DoContinue do
   begin
     Inc(i);
     Inc(Offset, Size);
 
-    var NameDelta: integer;
     ReadValue(Data, NameDelta);
     Inc(NameOffset, NameDelta);
 
-    var Name := ReadString(Header, NameOffset);
+    Name := ReadString(Header, NameOffset);
 
     // Get the offset to the next module. This gives us the size of this one.
     DoContinue := ReadValue(Data, Size);
@@ -287,7 +298,7 @@ begin
     if (Size > 0) then
     begin
       // Look for existing module
-      var Module := DebugInfo.Modules.FindOverlap(Segment, Offset, Size);
+      Module := DebugInfo.Modules.FindOverlap(Segment, Offset, Size);
       if (Module <> nil) then
         Logger.Error('[%6d] Modules overlap: %s and %s', [i, Module.Name, Name]);
 
@@ -301,32 +312,46 @@ end;
 // -----------------------------------------------------------------------------
 
 procedure TDebugInfoJdbgReader.LoadSourceFiles(const Header: PJDBGHeader; DebugInfo: TDebugInfo; Segment: TDebugInfoSegment);
+var
+  Offset: TDebugInfoOffset;
+  NameOffset: integer;
+  i: integer;
+  Data: pointer;
+  Size: integer;
+  DoContinue: Boolean;
+  NameDelta: integer;
+  Name: string;
+  Module: TDebugInfoModule;
+  FragmentSize: integer;
+  SourceFile: TDebugInfoSourceFile;
+  SourceFragment: TSourceFragment;
+  PreviousSourceFragment: TSourceFragment;
+  First: Boolean;
+  SourceFragmentX: TSourceFragment;
 begin
   Logger.Info('- Source files');
 
-  var Offset: TDebugInfoOffset := 0;
-  var NameOffset: integer := 0;
-  var i := 0;
+  Offset := 0;
+  NameOffset := 0;
+  i := 0;
 
-  var Data: pointer := PByte(Header) + Header.SourceNames;
+  Data := PByte(Header) + Header.SourceNames;
 
-  var Size: integer;
-  var DoContinue := ReadValue(Data, Size);
+  DoContinue := ReadValue(Data, Size);
   while DoContinue do
   begin
     Inc(i);
     Inc(Offset, Size);
 
-    var NameDelta: integer;
     ReadValue(Data, NameDelta);
     Inc(NameOffset, NameDelta);
 
-    var Name := ReadString(Header, NameOffset);
+    Name := ReadString(Header, NameOffset);
 
     // Get the offset to the next module. This gives us the size of this one.
     DoContinue := ReadValue(Data, Size);
 
-    var Module := DebugInfo.Modules.FindByOffset(Segment, Offset);
+    Module := DebugInfo.Modules.FindByOffset(Segment, Offset);
 
     if (Module <> nil) then
     begin
@@ -334,7 +359,7 @@ begin
 
       if (Size > 0) then
       begin
-        var FragmentSize := Size;
+        FragmentSize := Size;
         if (Offset+Cardinal(FragmentSize) > Module.Offset+Module.Size) then
         begin
           FragmentSize := Module.Offset+Module.Size - Offset;
@@ -342,9 +367,8 @@ begin
           Logger.Debug('[%6d] Source fragment at %.8X (Size:%.4X) exceeds module %s at %.8X (Size:%.4X) for source file %s. Truncated to %.4X', [i, Offset, Size, Module.Name, Module.Offset, Module.Size, Name, FragmentSize]);
         end;
 
-        var SourceFile := Module.SourceFiles.Add(Name);
+        SourceFile := Module.SourceFiles.Add(Name);
 
-        var SourceFragment: TSourceFragment;
         SourceFragment.SourceFile := SourceFile;
         // Offset is not relative to module because we need later on to
         // map line numbers (which are read with absolute offset) to
@@ -371,9 +395,9 @@ begin
       end));
 
   // Check for duplicate or overlapping fragments
-  var PreviousSourceFragment: TSourceFragment := Default(TSourceFragment);
-  var First := True;
-  for var SourceFragmentX in FSourceFragments do
+  PreviousSourceFragment := Default(TSourceFragment);
+  First := True;
+  for SourceFragmentX in FSourceFragments do
   begin
     if (not First) then
     begin
@@ -391,42 +415,55 @@ end;
 // -----------------------------------------------------------------------------
 
 procedure TDebugInfoJdbgReader.LoadLineNumbers(const Header: PJDBGHeader; DebugInfo: TDebugInfo; Segment: TDebugInfoSegment);
+var
+  Offset: TDebugInfoOffset;
+  LineNumber: integer;
+  i: integer;
+  Data: pointer;
+  Delta: integer;
+  DoContinue: Boolean;
+  LineDelta: integer;
+  Module: TDebugInfoModule;
+  SourceFile: TDebugInfoSourceFile;
+  L: integer;
+  H: integer;
+  mid: integer;
+  SourceFragment: TSourceFragment;
+  RelativeOffset: TDebugInfoOffset;
 begin
   Logger.Info('- Line numbers');
 
-  var Offset: TDebugInfoOffset := 0;
-  var LineNumber: integer := 0;
-  var i := 0;
+  Offset := 0;
+  LineNumber := 0;
+  i := 0;
 
-  var Data: pointer := PByte(Header) + Header.LineNumbers;
+  Data := PByte(Header) + Header.LineNumbers;
 
-  var Delta: integer;
-  var DoContinue := ReadValue(Data, Delta);
+  DoContinue := ReadValue(Data, Delta);
   while DoContinue do
   begin
     Inc(i);
     Inc(Offset, Delta);
 
-    var LineDelta: integer;
     ReadValue(Data, LineDelta);
     Inc(LineNumber, LineDelta);
 
     DoContinue := ReadValue(Data, Delta);
 
-    var Module := DebugInfo.Modules.FindByOffset(Segment, Offset);
+    Module := DebugInfo.Modules.FindByOffset(Segment, Offset);
     if (Module <> nil) then
     begin
       // Find the source file from the offset
-      var SourceFile: TDebugInfoSourceFile := nil;
+      SourceFile := nil;
       // Binary search
-      var L := 0;
-      var H := FSourceFragments.Count-1;
+      L := 0;
+      H := FSourceFragments.Count-1;
 
       while (L <= H) and (SourceFile = nil) do
       begin
-        var mid := L + (H - L) shr 1;
+        mid := L + (H - L) shr 1;
 
-        var SourceFragment := FSourceFragments[mid];
+        SourceFragment := FSourceFragments[mid];
 
         if (Offset < SourceFragment.StartOffset) then
           H := mid - 1
@@ -444,7 +481,7 @@ begin
         if (Module.SourceFiles.Contains(SourceFile)) then
         begin
           // Offset is relative to segment. Make it relative to module
-          var RelativeOffset := Offset - Module.Offset;
+          RelativeOffset := Offset - Module.Offset;
           Module.SourceLines.Add(SourceFile, LineNumber, RelativeOffset);
         end else
           Logger.Warning('[%6d] Module and source file mismatched for line number %d at %8X. Module: %s, Source: %s ', [i, LineNumber, Offset, Module.Name, SourceFile.Filename]);
@@ -458,30 +495,42 @@ end;
 // -----------------------------------------------------------------------------
 
 procedure TDebugInfoJdbgReader.LoadSymbols(const Header: PJDBGHeader; DebugInfo: TDebugInfo; Segment: TDebugInfoSegment);
+var
+  Offset: TDebugInfoOffset;
+  FirstWordOffset: integer;
+  SecondWordOffset: integer;
+  i: integer;
+  Data: pointer;
+  Delta: integer;
+  DoContinue: Boolean;
+  NameDelta: integer;
+  Name: string;
+  Module: TDebugInfoModule;
+  RelativeOffset: TDebugInfoOffset;
+  Symbol: TDebugInfoSymbol;
+  SymbolSize: integer;
 begin
   Logger.Info('- Symbols');
 
-  var Offset: TDebugInfoOffset := 0;
-  var FirstWordOffset: integer := 0;
-  var SecondWordOffset: integer := 0;
-  var i := 0;
+  Offset := 0;
+  FirstWordOffset := 0;
+  SecondWordOffset := 0;
+  i := 0;
 
-  var Data: pointer := PByte(Header) + Header.Symbols;
+  Data := PByte(Header) + Header.Symbols;
 
-  var Delta: integer;
-  var DoContinue := ReadValue(Data, Delta);
+  DoContinue := ReadValue(Data, Delta);
   while DoContinue do
   begin
     Inc(i);
     Inc(Offset, Delta);
 
-    var NameDelta: integer;
     ReadValue(Data, NameDelta);
     Inc(FirstWordOffset, NameDelta);
     ReadValue(Data, NameDelta);
     Inc(SecondWordOffset, NameDelta);
 
-    var Name := ReadString(Header, FirstWordOffset);
+    Name := ReadString(Header, FirstWordOffset);
     if (SecondWordOffset <> 0) then
       Name := Name + '.' + ReadString(Header, SecondWordOffset);
 
@@ -489,19 +538,19 @@ begin
     DoContinue := ReadValue(Data, Delta);
     Assert(Delta >= 0, 'Symbol with negative size');
 
-    var Module := DebugInfo.Modules.FindByOffset(Segment, Offset);
+    Module := DebugInfo.Modules.FindByOffset(Segment, Offset);
     if (Module <> nil) then
     begin
       Name := DemangleMapSymbol(Module, Name);
       Logger.Debug('  Symbol[%6d]: %.8X (%.4X) %s, Module: %s', [i, Offset, Delta, Name, Module.Name]);
 
       // Offset is relative to segment. Make it relative to module
-      var RelativeOffset := Offset - Module.Offset;
-      var Symbol := Module.Symbols.Add(Name, RelativeOffset);
+      RelativeOffset := Offset - Module.Offset;
+      Symbol := Module.Symbols.Add(Name, RelativeOffset);
       if (Symbol <> nil) then
       begin
         // This problem is so common that we're logging it at debug level instead of warning level
-        var SymbolSize := Delta;
+        SymbolSize := Delta;
         if (Symbol.Offset + Cardinal(Delta) > Module.Size) then
         begin
           SymbolSize := Module.Size - Symbol.Offset;
@@ -521,15 +570,20 @@ end;
 // -----------------------------------------------------------------------------
 
 procedure TDebugInfoJdbgReader.LoadDebugInfo(DebugInfo: TDebugInfo; Stream: TMemoryStream);
+var
+  Segment: TDebugInfoSegment;
+  Header: PJDBGHeader;
+  MaxSegmentSize: TDebugInfoOffset;
+  Module: TDebugInfoModule;
 begin
   Logger.Debug('- Synthesizing .text segment');
-  var Segment := DebugInfo.Segments.Add(1, '.text', sctCODE);
+  Segment := DebugInfo.Segments.Add(1, '.text', sctCODE);
   Segment.Offset := $00000000;
   Segment.Size := 0;
 
   FSourceFragments := TList<TSourceFragment>.Create;
   try
-    var Header := PJDBGHeader(Stream.Memory);
+    Header := PJDBGHeader(Stream.Memory);
 
     LoadModules(Header, DebugInfo, Segment);
     LoadSourceFiles(Header, DebugInfo, Segment);
@@ -541,8 +595,8 @@ begin
   end;
 
   // Determine max size of segment
-  var MaxSegmentSize := Segment.Size;
-  for var Module in DebugInfo.Modules do
+  MaxSegmentSize := Segment.Size;
+  for Module in DebugInfo.Modules do
   begin
     // Determine max size of module
     Module.CalculateSize;

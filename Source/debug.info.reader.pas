@@ -39,6 +39,13 @@ implementation
 uses
   System.SysUtils;
 
+{$if (CompilerVersion < 31.0)}
+type
+  // TBufferedFileStream was introduced in Delphi 10.1 Berlin. On older compilers
+  // fall back to an unbuffered TFileStream (functionally equivalent, just slower).
+  TBufferedFileStream = TFileStream;
+{$ifend}
+
 
 constructor TDebugInfoReader.Create;
 begin
@@ -47,10 +54,12 @@ begin
 end;
 
 procedure TDebugInfoReader.LoadFromFile(const Filename: string; DebugInfo: TDebugInfo);
+var
+  Stream: TBufferedFileStream;
 begin
   try
 
-    var Stream := TBufferedFileStream.Create(Filename, fmOpenRead or fmShareDenyWrite);
+    Stream := TBufferedFileStream.Create(Filename, fmOpenRead or fmShareDenyWrite);
     try
 
       LoadFromStream(Stream, DebugInfo);

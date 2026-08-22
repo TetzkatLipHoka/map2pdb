@@ -53,34 +53,48 @@ uses
 //
 // -----------------------------------------------------------------------------
 procedure FilterModules(DebugInfo: TDebugInfo; const ModuleFilter: string; Include: boolean; Logger: IDebugInfoModuleLogger);
+var
+  MaskValues: TArray<string>;
+  SymbolsIncludeEliminateCount: integer;
+  SymbolsExcludeEliminateCount: integer;
+  ModulesIncludeEliminateCount: integer;
+  ModulesExcludeEliminateCount: integer;
+  Masks: TObjectList<TMask>;
+  Segments: TList<Word>;
+  MaskValue: string;
+  Segment: integer;
+  i: integer;
+  Module: TDebugInfoModule;
+  KeepIt: boolean;
+  Mask: TMask;
+  Segment2: Word;
 begin
   try
-    var MaskValues := ModuleFilter.Split([';']);
+    MaskValues := ModuleFilter.Split([';']);
 
-    var SymbolsIncludeEliminateCount := 0;
-    var SymbolsExcludeEliminateCount := 0;
-    var ModulesIncludeEliminateCount := 0;
-    var ModulesExcludeEliminateCount := 0;
+    SymbolsIncludeEliminateCount := 0;
+    SymbolsExcludeEliminateCount := 0;
+    ModulesIncludeEliminateCount := 0;
+    ModulesExcludeEliminateCount := 0;
 
-    var Masks := TObjectList<TMask>.Create;
-    var Segments := TList<Word>.Create;
+    Masks := TObjectList<TMask>.Create;
+    Segments := TList<Word>.Create;
     try
       Masks.Capacity := Length(MaskValues);
-      for var MaskValue in MaskValues do
+      for MaskValue in MaskValues do
       begin
-        var Segment: integer;
         if (MaskValue.Length = 4) and (TryStrToInt(MaskValue, Segment)) and (Segment <= $FFFF) then
           Segments.Add(Segment)
         else
           Masks.Add(TMask.Create(MaskValue));
       end;
 
-      for var i := DebugInfo.Modules.Count-1 downto 0 do
+      for i := DebugInfo.Modules.Count-1 downto 0 do
       begin
-        var Module := DebugInfo.Modules[i];
-        var KeepIt: boolean := not Include;
+        Module := DebugInfo.Modules[i];
+        KeepIt := not Include;
 
-        for var Mask in Masks do
+        for Mask in Masks do
           if (Mask.Matches(Module.Name)) then
           begin
             KeepIt := Include;
@@ -88,8 +102,8 @@ begin
           end;
 
         if (KeepIt = not Include) then
-          for var Segment in Segments do
-            if (Module.Segment.Index = Segment) then
+          for Segment2 in Segments do
+            if (Module.Segment.Index = Segment2) then
             begin
               KeepIt := Include;
               break;
@@ -135,9 +149,11 @@ end;
 //
 // -----------------------------------------------------------------------------
 procedure PostImportValidation(DebugInfo: TDebugInfo; Logger: IDebugInfoModuleLogger);
+var
+  Module: TDebugInfoModule;
 begin
   // Modules with lines but no source or vice versa
-  for var Module in DebugInfo.Modules do
+  for Module in DebugInfo.Modules do
   begin
     if (Module.SourceFiles.Count = 0) then
     begin

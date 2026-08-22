@@ -35,19 +35,44 @@ procedure PatchPE(const Filename, PdbFilename: string);
 
 const
   sSectionDebug: array[0..IMAGE_SIZEOF_SHORT_NAME-1] of AnsiChar = '.debug';
+  Zero: Byte = 0;
+var
+  Logger: IDebugInfoModuleLogger;
+  DebugBytes: TBytes;
+  DebugSize: Cardinal;
+  DebugSectionSize: Cardinal;
+  Stream: TStream;
+  DosHeader: TImageDosHeader;
+  Signature: DWORD;
+  FileHeader: TImageFileHeader;
+  OptionalHeader32: TImageOptionalHeader32;
+  OptionalHeader64: TImageOptionalHeader64;
+  PE32Plus: boolean;
+  NumberOfRvaAndSizes: DWORD;
+  DataDirectory: TArray<TImageDataDirectory>;
+  DebugOffset: integer;
+  DebugVirtualAddress: Cardinal;
+  SectionHeaderOffset: Int64;
+  SectionHeaders: TArray<TImageSectionHeader>;
+  HasDebugSection: boolean;
+  UseExistingDebugSection: boolean;
+  i: integer;
+  SectionHeader: TImageSectionHeader;
+  DebugDirectory: TImageDebugDirectory;
+  CodeViewInfoPDB: TCodeViewInfoPDB70;
 begin
-  var Logger := RegisterDebugInfoModuleLogger('bind');
+  Logger := RegisterDebugInfoModuleLogger('bind');
   Logger.Info('Patching PE file');
 
   // Get the PDB filename as UTF-8
-  var DebugBytes := TEncoding.UTF8.GetBytes(PdbFilename);
+  DebugBytes := TEncoding.UTF8.GetBytes(PdbFilename);
 
   // Calculate size of the CodeView info block, including the filename and terminating zero
-  var DebugSize: Cardinal := SizeOf(TCodeViewInfoPDB70) + Length(DebugBytes) + 1;
+  DebugSize := SizeOf(TCodeViewInfoPDB70) + Length(DebugBytes) + 1;
   // And the size of the debug section that contains the CodeView block
-  var DebugSectionSize: Cardinal := DebugSize + SizeOf(TImageDebugDirectory);
+  DebugSectionSize := DebugSize + SizeOf(TImageDebugDirectory);
 
-  var Stream: TStream := nil;
+  Stream := nil;
   try
     try
 
@@ -64,7 +89,6 @@ begin
     (*
     ** DOS header
     *)
-    var DosHeader: TImageDosHeader;
     Stream.ReadBuffer(DosHeader, SizeOf(DosHeader));
 
     if (DosHeader.e_magic <> IMAGE_DOS_SIGNATURE) then
@@ -77,8 +101,6 @@ begin
     // The DOS header gives us the offset to the NT header
     Stream.Seek(DosHeader._lfanew, soBeginning);
 
-    var Signature: DWORD;
-    var FileHeader: TImageFileHeader;
     Stream.ReadBuffer(Signature, SizeOf(Signature));
     Stream.ReadBuffer(FileHeader, SizeOf(FileHeader));
 
@@ -88,14 +110,12 @@ begin
     // The first Word of the structure tells us what kind it is: Either
     // TImageOptionalHeader32 or TImageOptionalHeader64.
     // We start by reading the word that tells us what we're dealing with.
-    var OptionalHeader32: TImageOptionalHeader32;
-    var OptionalHeader64: TImageOptionalHeader64;
     Stream.ReadBuffer(OptionalHeader32.Magic, SizeOf(OptionalHeader32.Magic));
 
 
     // Then we read the 32-/64-bit part but leave out the data directory at the end.
-    var PE32Plus := False;
-    var NumberOfRvaAndSizes: DWORD := 0;
+    PE32Plus := False;
+    NumberOfRvaAndSizes := 0;
 
     case OptionalHeader32.Magic of
       IMAGE_NT_OPTIONAL_HDR32_MAGIC:
@@ -137,7 +157,6 @@ begin
     // Read the data directory but limit the size to something usable (and reasonable).
     if (NumberOfRvaAndSizes < IMAGE_DIRECTORY_ENTRY_DEBUG-1) or (NumberOfRvaAndSizes > $100) then
       Logger.Error('Invalid or unsupported PE directory size: %d', [NumberOfRvaAndSizes]);
-    var DataDirectory: TArray<TImageDataDirectory>;
     SetLength(DataDirectory, NumberOfRvaAndSizes);
     Stream.ReadBuffer(DataDirectory[0], NumberOfRvaAndSizes * SizeOf(TImageDataDirectory));
 
@@ -148,24 +167,23 @@ begin
     // If the directory already contains a pointer to a .debug section, and there's
     // enough room in that section, then we will use the section. Otherwise we need
     // to add a new section.
-    var DebugOffset := 0; // File offset of debug data
-    var DebugVirtualAddress: Cardinal := DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG].VirtualAddress;
+    DebugOffset := 0; // File offset of debug data
+    DebugVirtualAddress := DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG].VirtualAddress;
 
     // Get all the existing section headers.
-    var SectionHeaderOffset := Stream.Position;
-    var SectionHeaders: TArray<TImageSectionHeader>;
+    SectionHeaderOffset := Stream.Position;
     SetLength(SectionHeaders, FileHeader.NumberOfSections);
     if (FileHeader.NumberOfSections > 0) then
       Stream.ReadBuffer(SectionHeaders[0], FileHeader.NumberOfSections * SizeOf(TImageSectionHeader));
 
-    var HasDebugSection := False;
-    var UseExistingDebugSection := False;
+    HasDebugSection := False;
+    UseExistingDebugSection := False;
 
     if (DebugVirtualAddress <> 0) and (FileHeader.NumberOfSections > 0) then
     begin
 
       // Iterate the section headers to locate the debug section header.
-      for var i := 0 to High(SectionHeaders) do
+      for i := 0 to High(SectionHeaders) do
       begin
         if (DebugVirtualAddress >= SectionHeaders[i].VirtualAddress) and (DebugVirtualAddress < SectionHeaders[i].VirtualAddress+SectionHeaders[i].Misc.VirtualSize) then
         begin
@@ -232,7 +250,7 @@ begin
       end else
         Logger.Info('- Updating existing .debug section.');
 
-      var SectionHeader := Default(TImageSectionHeader);
+      SectionHeader := Default(TImageSectionHeader);
       // Name: An 8-byte, null-padded UTF-8 encoded string. If the string is exactly 8 characters
       // long, there is no terminating null.
       Move(sSectionDebug, SectionHeader.Name, SizeOf (SectionHeader.Name));
@@ -241,7 +259,7 @@ begin
       // relative to the image base when the section is loaded into memory.
       // The VirtualAddress of our new section is located after the last of the existing sections
       // and must be aligned.
-      for var i := 0 to High(SectionHeaders) do
+      for i := 0 to High(SectionHeaders) do
         SectionHeader.VirtualAddress := Max(SectionHeader.VirtualAddress, SectionHeaders[i].VirtualAddress + SectionHeaders[i].Misc.VirtualSize);
       if (PE32Plus) then
         SectionHeader.VirtualAddress := AlignTo(SectionHeader.VirtualAddress, OptionalHeader64.SectionAlignment)
@@ -289,7 +307,7 @@ begin
       it resides in the image file and is not mapped into the run-time address space). If it is mapped,
       the RVA is its address.
     }
-    var DebugDirectory := Default(TImageDebugDirectory);
+    DebugDirectory := Default(TImageDebugDirectory);
     // Type: The format of debugging information.
     DebugDirectory._Type := IMAGE_DEBUG_TYPE_CODEVIEW;
     // SizeOfData: The size of the debug data (not including the debug
@@ -306,13 +324,12 @@ begin
     ** Debug data
     *)
     // Populate and write a CV_INFO_PDB70 block
-    var CodeViewInfoPDB := Default(TCodeViewInfoPDB70);
+    CodeViewInfoPDB := Default(TCodeViewInfoPDB70);
     CodeViewInfoPDB.CvSignature := $53445352; // RSDS
     CodeViewInfoPDB.Signature := PdbBuildSignature; // GUID - must be the same as the one in the PDB
     CodeViewInfoPDB.Age := PdbBuildAge; // Generation counter - must be same value as the one in the PDB
     Stream.WriteBuffer(CodeViewInfoPDB, SizeOf(CodeViewInfoPDB));
     Stream.WriteData(DebugBytes, Length(DebugBytes));
-    const Zero: Byte = 0;
     Stream.WriteBuffer(Zero, 1);
     Logger.Info('- PDB file name has been stored in debug data.');
 

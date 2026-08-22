@@ -151,8 +151,10 @@ begin
 end;
 
 function RegisterDebugInfoModuleLogger(const ModuleName: string): IDebugInfoModuleLogger;
+var
+  LogModule: TDebugInfoLogModule;
 begin
-  var LogModule := RegisterDebugInfoLogModule(ModuleName);
+  LogModule := RegisterDebugInfoLogModule(ModuleName);
   Result := TDebugInfoModuleLogger.Create(LogModule);
 end;
 

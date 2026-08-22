@@ -44,6 +44,17 @@ procedure TDebugInfoYamlWriter.SaveToStream(Stream: TStream; DebugInfo: TDebugIn
 var
   Level: integer;
   Writer: TStreamWriter;
+  TweakedSignature: TGUID;
+  Bytes: TBytes;
+  Module: TDebugInfoModule;
+  SourceFile: TDebugInfoSourceFile;
+  LastSourceFile: TDebugInfoSourceFile;
+  SourceLine: TDebugInfoSourceLine;
+  Symbol: TDebugInfoSymbol;
+  Segment: TDebugInfoSegment;
+{$ifdef WRITE_PUBLICS}
+  Offset: TDebugInfoOffset;
+{$endif WRITE_PUBLICS}
 
   procedure WriteLine(const s: string); overload;
   begin
@@ -92,8 +103,8 @@ begin
       // llvm-pdbutil swaps the values in the GUID that have endianess
       // (this is a bug) so we need to save them "pre-swapped" in the
       // YAML file in order to get the correct value in the PDB file.
-      var TweakedSignature := PdbBuildSignature;
-      var Bytes := TweakedSignature.ToByteArray(TEndian.Little);
+      TweakedSignature := PdbBuildSignature;
+      Bytes := TweakedSignature.ToByteArray(TEndian.Little);
       TweakedSignature := TGUID.Create(Bytes, TEndian.Big);
 
       WriteLine('Age: %d', [PdbBuildAge]);
@@ -119,7 +130,7 @@ begin
       BeginBlock('Modules:');
       begin
 
-        for var Module in DebugInfo.Modules do
+        for Module in DebugInfo.Modules do
         begin
           // Skip module if it doesn't contain any usable source lines
           if (Module.SourceLines.Empty) then
@@ -137,7 +148,7 @@ begin
 
             BeginBlock('SourceFiles:');
             begin
-              for var SourceFile in Module.SourceFiles do
+              for SourceFile in Module.SourceFiles do
                 WriteLine('- ''%s''', [SourceFile.Filename]);
             end;
             EndBlock;
@@ -149,7 +160,7 @@ begin
               begin
                 BeginBlock('Checksums:');
                 begin
-                  for var SourceFile in Module.SourceFiles do
+                  for SourceFile in Module.SourceFiles do
                   begin
                     BeginBlock('- FileName: ''%s''', [SourceFile.Filename]);
                     begin
@@ -172,8 +183,8 @@ begin
                 WriteLine('Flags: [ ]');
                 BeginBlock('Blocks:');
                 begin
-                  var LastSourceFile: TDebugInfoSourceFile := nil;
-                  for var SourceLine in Module.SourceLines do
+                  LastSourceFile := nil;
+                  for SourceLine in Module.SourceLines do
                   begin
                     if (SourceLine.SourceFile <> LastSourceFile) then
                     begin
@@ -221,7 +232,7 @@ begin
               BeginBlock('Records:');
               begin
 
-                for var Symbol in Module.Symbols do
+                for Symbol in Module.Symbols do
                 begin
                   // Ignore zero size symbols
                   if (Symbol.Size = 0) then
@@ -308,7 +319,7 @@ begin
               end;
               EndBlock;
 
-              for var Segment in DebugInfo.Segments do
+              for Segment in DebugInfo.Segments do
               begin
                 BeginBlock('- Kind: S_SECTION');
                 begin
@@ -368,7 +379,7 @@ begin
     begin
       BeginBlock('Records:');
       begin
-        for var Module in DebugInfo.Modules do
+        for Module in DebugInfo.Modules do
         begin
           // Skip module if it doesn't contain any usable source lines
           if (Module.SourceLines.Empty) then
@@ -378,7 +389,7 @@ begin
           if (not (Module.Segment.SegClassType in [sctCODE, sctICODE])) then
             continue;
 
-          for var Symbol in Module.Symbols do
+          for Symbol in Module.Symbols do
           begin
             // Ignore zero size symbols
             if (Symbol.Size = 0) then
@@ -390,7 +401,7 @@ begin
               begin
                 WriteLine('Flags: [ Function ]');
 //                var Offset := Symbol.Module.Segment.Offset+Symbol.Module.Offset+Symbol.Offset;
-                var Offset := Symbol.Module.Offset+Symbol.Offset;
+                Offset := Symbol.Module.Offset+Symbol.Offset;
                 WriteLine('Offset: %0:d # %0:.8X [%1:.8X]', [Offset, Symbol.Offset]);
                 WriteLine('Segment: %d', [Symbol.Module.Segment.Value]);
                 WriteLine('Name: ''%s''', [Symbol.Name]);

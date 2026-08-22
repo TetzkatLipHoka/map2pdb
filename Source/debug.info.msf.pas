@@ -31,7 +31,7 @@ uses
 // -----------------------------------------------------------------------------
 type
   TBinaryBlockWriter = class
-  private type
+  public type
     TBlockWriterBookmark = record
     private
       FWriter: TBinaryBlockWriter;
@@ -276,13 +276,15 @@ begin
 end;
 
 procedure TMSFFile.BeginFile;
+var
+  StreamIndex: PDBStreamIndex;
 begin
   Assert(FState = TFileState.fsInit);
   FState := TFileState.fsOpen;
 
 
   // Preallocate the fixed streams so their indices aren't used by other streams
-  for var StreamIndex := Low(PDBStreamIndex) to High(PDBStreamIndex) do
+  for StreamIndex := Low(PDBStreamIndex) to High(PDBStreamIndex) do
     // Allocate and touch the stream so the stream index is assigned
     AllocateStream.Touch;
 
@@ -317,14 +319,18 @@ begin
 end;
 
 procedure TMSFFile.EndFile;
+var
+  IndexStream: TMSFStream;
+  DirectoryStream: TMSFStream;
+  MSFSuperBlock: TMSFSuperBlock;
 begin
   Assert(FState = TFileState.fsOpen);
 
   Assert(FCurrentStream = nil);
 
   // Create streams directly so they do not appear in the stream list
-  var IndexStream := TMSFStream.Create(Self);
-  var DirectoryStream := TMSFStream.Create(Self);
+  IndexStream := TMSFStream.Create(Self);
+  DirectoryStream := TMSFStream.Create(Self);
   try
 
     // Sort streams in Index order for the directory
@@ -361,7 +367,6 @@ begin
     // Rewind and write the MSF Superblock at block #0.
     // At this point all streams, and the directory, must have been written.
     Writer.BlockIndex := 0;
-    var MSFSuperBlock: TMSFSuperBlock;
     WriteSuperBlock(MSFSuperBlock, IndexStream, DirectoryStream);
 
 
@@ -414,26 +419,35 @@ begin
 end;
 
 function TMSFFile.GetFixedStream(Index: PDBStreamIndex): TMSFStream;
+var
+  i: integer;
 begin
   Result := nil;
   // The list contains streams in allocation order, not Index order.
-  for var i := 0 to FStreams.Count-1 do
+  for i := 0 to FStreams.Count-1 do
     if (FStreams[i].HasIndex) and (FStreams[i].Index = Word(Ord(Index))) then
       Exit(FStreams[i]);
   Assert(False);
 end;
 
 function TMSFFile.GetStream(Index: TMSFStreamIndex): TMSFStream;
+var
+  i: integer;
 begin
   Result := nil;
   // The list contains streams in allocation order, not Index order.
-  for var i := 0 to FStreams.Count-1 do
+  for i := 0 to FStreams.Count-1 do
     if (FStreams[i].HasIndex) and (FStreams[i].Index = Index) then
       Exit(FStreams[i]);
   Assert(False);
 end;
 
 procedure TMSFFile.WriteStreamBlockList(Writer: TBinaryBlockWriter; Stream: TMSFStream);
+var
+  BlockCount: integer;
+  Offset: Int64;
+  PhysicalOffset: Cardinal;
+  BlockIndex: Cardinal;
 begin
 //  Assert(Stream.BlockIndex <> TMSFStream.NullBlockIndex);
 
@@ -441,14 +455,14 @@ begin
   // contiguous (except where the stream straddles an interval boundary). That is,
   // blocks from different streams do not interleave.
 
-  var BlockCount := Ceil(Stream.Length / FBlockSize);
-  var Offset := Stream.Offset;
+  BlockCount := Ceil(Stream.Length / FBlockSize);
+  Offset := Stream.Offset;
   while (BlockCount > 0) do
   begin
     // Convert the logical offset to a physical offset, and then the
     // physical offset to a block index.
-    var PhysicalOffset: Cardinal := TBinaryBlockWriter.LogicalToPhysicalOffset(Offset, FBlockSize);
-    var BlockIndex: Cardinal := PhysicalOffset div FBlockSize;
+    PhysicalOffset := TBinaryBlockWriter.LogicalToPhysicalOffset(Offset, FBlockSize);
+    BlockIndex := PhysicalOffset div FBlockSize;
 
     Writer.Write(BlockIndex);
 
@@ -472,21 +486,27 @@ begin
 end;
 
 procedure TMSFFile.WriteFreeBlockMap(const MSFSuperBlock: TMSFSuperBlock);
+var
+  BlockCount: Cardinal;
+  FreeBlockMapIndex: Cardinal;
+  SpaceInFreeBlockMap: Cardinal;
+  Mask: Byte;
+  BitMask: Word;
 begin
 
   // Rewind and update all FBMs so all blocks (essentially all blocks "inside"
   // the file) are marked as allocated.
   // See: WriteBlockMap
 
-  var BlockCount := MSFSuperBlock.NumBlocks;
-  var FreeBlockMapIndex := MSFSuperBlock.FreeBlockMapBlock;
+  BlockCount := MSFSuperBlock.NumBlocks;
+  FreeBlockMapIndex := MSFSuperBlock.FreeBlockMapBlock;
 
   while (BlockCount > 0) do
   begin
     // Seek to update FBM
     FWriter.BlockIndex := FreeBlockMapIndex;
 
-    var SpaceInFreeBlockMap := MSFSuperBlock.BlockSize;
+    SpaceInFreeBlockMap := MSFSuperBlock.BlockSize;
 
     // Write chunks of 8 blocks allocated
     while (SpaceInFreeBlockMap > 0) and (BlockCount > 8) do
@@ -500,8 +520,8 @@ begin
     if (SpaceInFreeBlockMap > 0) and (BlockCount > 0) then
     begin
       // We must have less than 8 blocks remaining. Write it as an actual bit mask.
-      var Mask: Byte := $FF;
-      var BitMask: Word := 1; // Word to avoid overflow if BlockCount=8
+      Mask := $FF;
+      BitMask := 1; // Word to avoid overflow if BlockCount=8
       while (BlockCount > 0) do
       begin
         Mask := Mask and (not BitMask);
@@ -527,14 +547,17 @@ begin
 end;
 
 procedure TMSFFile.WriteDirectory(DirectoryStream: TMSFStream);
+var
+  Count: Cardinal;
+  Stream: TMSFStream;
 begin
   DirectoryStream.BeginStream;
 
   // Disregard streams that has been allocated but not opened (except fixed streams).
 
   // Number of streams
-  var Count: Cardinal := 0;
-  for var Stream in FStreams do
+  Count := 0;
+  for Stream in FStreams do
     if (Stream.IsValid) or (Stream.IsFixed) then
     begin
       Assert(Stream.State in [TMSFStreamState.ssIndex, TMSFStreamState.ssClosed]);
@@ -543,12 +566,12 @@ begin
   DirectoryStream.Writer.Write(Cardinal(Count));
 
   // Stream sizes
-  for var Stream in FStreams do
+  for Stream in FStreams do
     if (Stream.IsValid) or (Stream.IsFixed) then
       DirectoryStream.Writer.Write(Stream.Length);
 
   // Stream blocks
-  for var Stream in FStreams do
+  for Stream in FStreams do
     if (Stream.IsValid) then
       WriteStreamBlockList(DirectoryStream.Writer, Stream);
 
@@ -758,6 +781,10 @@ begin
 end;
 
 function TBinaryBlockWriter.WritePadding(DesiredPos: Int64; Poison: boolean): Int64;
+{$ifdef MSF_POISON}
+var
+  Count: Int64;
+{$endif MSF_POISON}
 begin
   Result := DesiredPos - Position;
   Assert(Result >= 0);
@@ -774,7 +801,7 @@ begin
   if (Poison) then
   begin
     Assert(Result <= $0F);
-    var Count := Result;
+    Count := Result;
     while (Count > 0) do
     begin
       Dec(Count);
@@ -795,12 +822,14 @@ end;
 procedure TBinaryBlockWriter.WriteBlockMap;
 const
   AllVacancies: Byte = $FF;
+var
+  i: Cardinal;
 begin
   BeginBlock;
   Assert((BlockIndex mod FBlockSize) in [1, 2]);
 
   // Mark all BlockSize*8 blocks free
-  for var i := 0 to FBlockSize-1 do
+  for i := 0 to FBlockSize-1 do
     FStream.WriteBuffer(AllVacancies, 1);
 
   FStreamSize := Max(FStreamSize, FStream.Position);
@@ -855,16 +884,21 @@ begin
 end;
 
 procedure TBinaryBlockWriter.WriteBuffer(const Buffer; Count: NativeInt);
+var
+  Interval: Int64;
+  Source: PByte;
+  BytesInThisInterval: Int64;
+  NewInterval: Int64;
 begin
   // Find start interval of this piece of data.
   // Disregard the first block so intervals start with the two FPM blocks
-  var Interval := (FStream.Position - FBlockSize) div FIntervalSize;
-  var Source: PByte := @Buffer;
+  Interval := (FStream.Position - FBlockSize) div FIntervalSize;
+  Source := @Buffer;
 
   while (Count > 0) do
   begin
     // How many bytes from current position to end of current interval
-    var BytesInThisInterval := (Interval+1) * FIntervalSize + FBlockSize - FStream.Position;
+    BytesInThisInterval := (Interval+1) * FIntervalSize + FBlockSize - FStream.Position;
     // ...but no more than what we need
     BytesInThisInterval := Min(Count, BytesInThisInterval);
 
@@ -878,7 +912,7 @@ begin
     begin
       // We have either written all the data, we are at the end of the
       // current interval, or both.
-      var NewInterval := (FStream.Position - FBlockSize) div FIntervalSize;
+      NewInterval := (FStream.Position - FBlockSize) div FIntervalSize;
 
       // If we are at a new interval...
       if (NewInterval <> Interval) then
@@ -901,6 +935,8 @@ begin
 end;
 
 procedure TBinaryBlockWriter.EndBlock(Expand: boolean);
+var
+  Padding: Int64;
 begin
   // In case we have used Seek to align the position then the physical
   // size can be smaller than the current position in which case we will
@@ -918,7 +954,7 @@ begin
     end;
   end;
 
-  var Padding := FBlockSize - (FStream.Position and (FBlockSize-1));
+  Padding := FBlockSize - (FStream.Position and (FBlockSize-1));
 
   // Move up to nearest whole block
   if (Padding <> FBlockSize) then
@@ -1000,8 +1036,12 @@ begin
 end;
 
 procedure TBinaryBlockWriter.SetPosition(const Value: Int64);
+var
+  NewPosition: Int64;
+  OldInterval: Int64;
+  NewInterval: Int64;
 begin
-  var NewPosition := LogicalToPhysicalOffset(Value);
+  NewPosition := LogicalToPhysicalOffset(Value);
 
   // If we're expanding the stream then we need to take intervals into account and
   // write the FPMs when we cross an interval boundary.
@@ -1009,8 +1049,8 @@ begin
   if (NewPosition > FStreamSize) then
   begin
 
-    var OldInterval := (FStream.Position - FBlockSize) div FIntervalSize;
-    var NewInterval := (NewPosition - FBlockSize) div FIntervalSize;
+    OldInterval := (FStream.Position - FBlockSize) div FIntervalSize;
+    NewInterval := (NewPosition - FBlockSize) div FIntervalSize;
     Assert(OldInterval <= NewInterval);
 
     // NewInterval /should/ generally be OldInterval+1 but just in case we for

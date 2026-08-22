@@ -370,13 +370,17 @@ begin
 end;
 
 procedure TDebugInfoModule.CalculateSize;
+var
+  MaxModuleSize: TDebugInfoOffset;
+  SourceLine: TDebugInfoSourceLine;
+  Symbol: TDebugInfoSymbol;
 begin
   // Determine max size of module
-  var MaxModuleSize := FSize;
-  for var SourceLine in FSourceLines do
+  MaxModuleSize := FSize;
+  for SourceLine in FSourceLines do
     MaxModuleSize := Max(MaxModuleSize, SourceLine.Offset);
 
-  for var Symbol in FSymbols do
+  for Symbol in FSymbols do
     MaxModuleSize := Max(MaxModuleSize, Symbol.Offset + Symbol.Size);
 
   FSize := MaxModuleSize;
@@ -385,8 +389,10 @@ end;
 { TDebugInfoSymbols }
 
 procedure TDebugInfoSymbols.CalculateSizes;
+var
+  i: integer;
 begin
-  for var i := 0 to FSymbols.Count-2 do
+  for i := 0 to FSymbols.Count-2 do
     FSymbols[i].Size := FSymbols[i+1].Offset - FSymbols[i].Offset;
 
   // Assume last symbol extends to end of module
@@ -420,16 +426,19 @@ begin
 end;
 
 function TDebugInfoSymbols.Add(const AName: string; AOffset: TDebugInfoOffset): TDebugInfoSymbol;
+var
+  L, H, mid: integer;
+  Symbol: TDebugInfoSymbol;
 begin
   // Binary search
-  var L := 0;
-  var H := FSymbols.Count-1;
+  L := 0;
+  H := FSymbols.Count-1;
 
   while (L <= H) do
   begin
-    var mid := L + (H - L) shr 1;
+    mid := L + (H - L) shr 1;
 
-    var Symbol := FSymbols[mid];
+    Symbol := FSymbols[mid];
 
     if (AOffset < Symbol.Offset) then
       H := mid - 1
@@ -454,11 +463,12 @@ end;
 { TDebugInfoModules }
 
 function TDebugInfoModules.Add(const AName: string; ASegment: TDebugInfoSegment; AOffset, ASize: TDebugInfoOffset): TDebugInfoModule;
+var
+  Index: integer;
 begin
   Result := TDebugInfoModule.Create(FDebugInfo, AName, ASegment, AOffset, ASize);
   try
 
-    var Index: integer;
     if (FModules.BinarySearch(Result, Index, FComparer)) then
       raise EDebugInfo.Create('Cannot add overlapping modules');
 
@@ -501,24 +511,29 @@ begin
 end;
 
 function TDebugInfoModules.FindByName(const AName: string; ASegment: TDebugInfoSegment): TDebugInfoModule;
+var
+  Module: TDebugInfoModule;
 begin
-  for var Module in FModules do
+  for Module in FModules do
     if (Module.Segment = ASegment) and (Module.Name = AName) then
       Exit(Module);
   Result := nil;
 end;
 
 function TDebugInfoModules.FindByOffset(ASegment: TDebugInfoSegment; AOffset: TDebugInfoOffset): TDebugInfoModule;
+var
+  L, H, mid: integer;
+  Module: TDebugInfoModule;
 begin
   // Binary search
-  var L := 0;
-  var H := FModules.Count-1;
+  L := 0;
+  H := FModules.Count-1;
 
   while (L <= H) do
   begin
-    var mid := L + (H - L) shr 1;
+    mid := L + (H - L) shr 1;
 
-    var Module := FModules[mid];
+    Module := FModules[mid];
 
     if (ASegment.Index < Module.Segment.Index) then
       H := mid - 1
@@ -541,16 +556,19 @@ begin
 end;
 
 function TDebugInfoModules.FindOverlap(ASegment: TDebugInfoSegment; AOffset, ASize: TDebugInfoOffset): TDebugInfoModule;
+var
+  L, H, mid: integer;
+  Module: TDebugInfoModule;
 begin
   // Binary search
-  var L := 0;
-  var H := FModules.Count-1;
+  L := 0;
+  H := FModules.Count-1;
 
   while (L <= H) do
   begin
-    var mid := L + (H - L) shr 1;
+    mid := L + (H - L) shr 1;
 
-    var Module := FModules[mid];
+    Module := FModules[mid];
 
     if (ASegment.Index < Module.Segment.Index) then
       H := mid - 1
@@ -642,6 +660,8 @@ begin
 end;
 
 function TDebugInfoSegments.Add(AIndex: Cardinal; const AName: string; AClassType: TDebugInfoSegmentClass): TDebugInfoSegment;
+var
+  Index: integer;
 begin
   if (AIndex = 0) then
     raise EDebugInfo.CreateFmt('Invalid Segment index: %d', [AIndex]);
@@ -656,7 +676,6 @@ begin
 
   FSegments.Add(AIndex, Result);
   FNames.Add(AName, Result);
-  var Index: integer;
   FOrdered.BinarySearch(Result, Index);
   FOrdered.Insert(Index, Result);
 end;
@@ -741,8 +760,10 @@ const
     (Name: 'PDATA';     SegmentClass: sctDATA),
     (Name: 'TLS';       SegmentClass: sctTLS)
   );
+var
+  i: integer;
 begin
-  for var i := 0 to High(CommonNames) do
+  for i := 0 to High(CommonNames) do
     if (SameText(CommonNames[i].Name, AName)) then
       Exit(CommonNames[i].SegmentClass);
   Result := sctDATA;
@@ -761,6 +782,8 @@ begin
 end;
 
 function TDebugInfoSegment.FindOverlap(AIgnoredClassTypes: TDebugInfoSegmentClasses): TDebugInfoSegment;
+var
+  Segment: TDebugInfoSegment;
 begin
   Result := nil;
 
@@ -770,7 +793,7 @@ begin
   if (SegClassType in AIgnoredClassTypes) then
     Exit;
 
-  for var Segment in FOwner do
+  for Segment in FOwner do
   begin
     // Ignore self and empty segments
     if (Segment = Self) or (Segment.Size = 0) then
@@ -787,9 +810,11 @@ begin
 end;
 
 procedure TDebugInfoSegment.CheckOverlap;
+var
+  OverlappingSegment: TDebugInfoSegment;
 begin
   // Ignore overlap in .tls segment; Delphi is known to produce map files with invalid .tls segment offset.
-  var OverlappingSegment := FindOverlap([sctTLS]);
+  OverlappingSegment := FindOverlap([sctTLS]);
 
   if (OverlappingSegment <> nil) then
     raise EDebugInfo.CreateFmt('Overlapping segments: %s [%.4X:%.16X] and %s [%.4X:%.16X]',
@@ -830,13 +855,14 @@ begin
 end;
 
 constructor TDebugInfoSourceFiles.Create(AOwner: TDebugInfo);
+var
+  Ownerships: TDictionaryOwnerships;
 begin
   inherited Create;
 
   FOwner := AOwner;
 
   // If Owner=nil then we own the values
-  var Ownerships: TDictionaryOwnerships;
   if (FOwner = nil) then
     Ownerships:= [doOwnsValues]
   else
@@ -853,10 +879,12 @@ begin
 end;
 
 function TDebugInfoSourceFiles.First: TDebugInfoSourceFile;
+var
+  Pair: TPair<string, TDebugInfoSourceFile>;
 begin
   // It's more efficient to create an enumerator than to access the Values array
   if (FSourceFiles.Count > 0) then
-    for var Pair in FSourceFiles do
+    for Pair in FSourceFiles do
       Exit(Pair.Value);
 
   Result := nil;
@@ -876,6 +904,8 @@ end;
 
 function TDebugInfoSourceLines.Add(ASourceFile: TDebugInfoSourceFile; ALineNumber: integer;
   AOffset: TDebugInfoOffset): TDebugInfoSourceLine;
+var
+  Index: integer;
 begin
   Result := TDebugInfoSourceLine.Create;
 
@@ -888,7 +918,6 @@ begin
   // This can for example be caused by include files, inlining and generics
   // expansion.
 
-  var Index: integer;
   if (not FSourceLines.BinarySearch(Result, Index, FComparer)) then
     FSourceLines.Insert(Index, Result)
   else

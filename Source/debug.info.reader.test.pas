@@ -42,20 +42,24 @@ begin
 end;
 
 procedure TDebugInfoSyntheticReader.SynthesizeDebugInfo(DebugInfo: TDebugInfo);
+var
+  Segment: TDebugInfoSegment;
+  Module: TDebugInfoModule;
+  SourceFile: TDebugInfoSourceFile;
 begin
 //  var Segment := DebugInfo.SegmentClasses.Add(2, sctDATA, 'FOOBAR');
 //  Segment.Offset := $00171717;
 //  Segment.Size := $00272727;
 
-  var Segment := DebugInfo.Segments.Add(1, '.text', sctCODE);
+  Segment := DebugInfo.Segments.Add(1, '.text', sctCODE);
   Segment.Offset := $00474747;
   Segment.Size := 123456;
 
 
-  var Module := DebugInfo.Modules.Add('modmodmodmodmod', Segment, $121212, $202020);
+  Module := DebugInfo.Modules.Add('modmodmodmodmod', Segment, $121212, $202020);
   Module.ObjectName := 'objobjobjob.obj';
 
-  var SourceFile := Module.SourceFiles.Add('foofoofoofo.pas');
+  SourceFile := Module.SourceFiles.Add('foofoofoofo.pas');
   Module.SourceLines.Add(SourceFile, $0077, $0000);
   Module.SourceLines.Add(SourceFile, $0099, $0011);
 

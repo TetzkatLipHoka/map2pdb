@@ -46,8 +46,10 @@ var
 
 // Find parameter by index (zero based), ignores switches.
 function FindParam(Index: integer; var Value: string; const Default: string = ''): boolean;
+var
+  i: integer;
 begin
-  for var i := 1 to ParamCount do
+  for i := 1 to ParamCount do
   begin
     Value := ParamStr(i);
 
@@ -168,8 +170,10 @@ const
   ReaderClasses: array[TInputFormat] of TDebugInfoReaderClass = (TDebugInfoMapReader, TDebugInfoJdbgReader, TDebugInfoPEReader, TDebugInfoMadExceptReader, TDebugInfoSyntheticReader);
 
 function TryStrToInputFormat(const AName: string; var InputFormat: TInputFormat): boolean;
+var
+  InFormat: TInputFormat;
 begin
-  for var InFormat := Low(TInputFormat) to High(TInputFormat) do
+  for InFormat := Low(TInputFormat) to High(TInputFormat) do
     if (SameText(AName, sInputFileTypes[InFormat])) then
     begin
       InputFormat := InFormat;
@@ -178,9 +182,29 @@ begin
   Result := False;
 end;
 
+var
+  DoPause: boolean;
+  sw: TStopwatch;
+  SourceFilename: string;
+  TargetFilename: string;
+  PEFilename: string;
+  TargetType: TTargetType;
+  DebugInfo: TDebugInfo;
+  InputFormat: TInputFormat;
+  FileType: string;
+  ReaderClass: TDebugInfoReaderClass;
+  Reader: TDebugInfoReader;
+  Filter: string;
+  SymbolCount: integer;
+  LineCount: integer;
+  Module: TDebugInfoModule;
+  BlockSize: Integer;
+  Param: string;
+  Writer: TDebugInfoWriter;
+
 begin
-  var DoPause := FindCmdLineSwitch('pause');
-  var sw := TStopwatch.StartNew;
+  DoPause := FindCmdLineSwitch('pause');
+  sw := TStopwatch.StartNew;
   try
 
     RegisterDebugInfoLogger(TDebugInfoConsoleLogger.New);
@@ -188,9 +212,8 @@ begin
 
     DisplayBanner;
 
-    var SourceFilename: string;
-    var TargetFilename: string := '';
-    var PEFilename: string := '';
+    TargetFilename := '';
+    PEFilename := '';
 
     FindCmdLineSwitch('bind', PEFilename, True, [clstValueAppended]);
 
@@ -213,7 +236,7 @@ begin
     if FindCmdLineSwitch('v') or FindCmdLineSwitch('verbose') then
       SetDebugInfoLogLevel(lcInfo);
 
-    var TargetType: TTargetType := ttPDB;
+    TargetType := ttPDB;
     if (FindCmdLineSwitch('yaml', TargetFilename, True, [clstValueAppended])) or (FindCmdLineSwitch('yaml')) then
     begin
 
@@ -242,7 +265,7 @@ begin
     end;
 
 
-    var DebugInfo := TDebugInfo.Create;
+    DebugInfo := TDebugInfo.Create;
     try
 
 
@@ -250,9 +273,8 @@ begin
       ** Determine source file format
       *)
       // Default to map format
-      var InputFormat: TInputFormat := ifMap;
+      InputFormat := ifMap;
 
-      var FileType: string;
       // First try to get the format from the command line
       if (not FindCmdLineSwitch('format', FileType, True, [clstValueAppended])) or
         (not TryStrToInputFormat('.'+FileType, InputFormat)) then
@@ -269,9 +291,9 @@ begin
       (*
       ** Read source file
       *)
-      var ReaderClass: TDebugInfoReaderClass := ReaderClasses[InputFormat];
+      ReaderClass := ReaderClasses[InputFormat];
 
-      var Reader := ReaderClass.Create;
+      Reader := ReaderClass.Create;
       try
 
         Reader.LoadFromFile(SourceFilename, DebugInfo);
@@ -286,7 +308,7 @@ begin
       *)
 
       // Eliminate modules that doesn't satisfy include filter
-      var Filter := ''; // Include everything by default
+      Filter := ''; // Include everything by default
       if (FindCmdLineSwitch('include', Filter, True, [clstValueAppended])) and (Filter <> '') then
         FilterModules(DebugInfo, Filter, True, Logger);
 
@@ -298,9 +320,9 @@ begin
 
       if (DebugInfoLogLevel <= lcInfo) then
       begin
-        var SymbolCount := 0;
-        var LineCount := 0;
-        for var Module in DebugInfo.Modules do
+        SymbolCount := 0;
+        LineCount := 0;
+        for Module in DebugInfo.Modules do
         begin
           Inc(SymbolCount, Module.Symbols.Count);
           Inc(LineCount, Module.SourceLines.Count);
@@ -320,12 +342,11 @@ begin
       ** Write target file
       *)
       begin
-        var BlockSize: Integer := 0;
-        var Param: string;
+        BlockSize := 0;
         if (FindCmdLineSwitch('blocksize', Param, True, [clstValueAppended])) and (TryStrToInt(Param, BlockSize)) then
           Logger.Info('MSF block size: %.0n bytes', [BlockSize * 1.0]);
 
-        var Writer := WriterClasses[TargetType].Create(BlockSize);
+        Writer := WriterClasses[TargetType].Create(BlockSize);
         try
 
           Writer.SaveToFile(TargetFilename, DebugInfo);

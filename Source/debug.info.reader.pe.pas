@@ -119,6 +119,14 @@ begin
 end;
 
 function TPEImage.Parse(ABase: PByte; ASize: NativeInt): Boolean;
+var
+  DosHeader: PImageDosHeader;
+  NtBase: PByte;
+  FileHeader: PImageFileHeader;
+  OptHeader: PByte;
+  Magic: Word;
+  Opt: PImageOptionalHeader64;
+  Opt2: PImageOptionalHeader32;
 begin
   Result := False;
 
@@ -128,40 +136,40 @@ begin
   if (Size < SizeOf(TImageDosHeader)) then
     Exit;
 
-  var DosHeader := PImageDosHeader(Base);
+  DosHeader := PImageDosHeader(Base);
   if (DosHeader._lfanew <= 0) or (DosHeader._lfanew >= Size) then
     Exit;
   // "MZ"
   if (PWord(Base)^ <> IMAGE_DOS_SIGNATURE) then
     Exit;
 
-  var NtBase := Base + DosHeader._lfanew;
+  NtBase := Base + DosHeader._lfanew;
   // "PE\0\0" + FileHeader
   if (not CheckBounds(NtBase, SizeOf(DWORD) + SizeOf(TImageFileHeader))) then
     Exit;
   if (PDWORD(NtBase)^ <> IMAGE_NT_SIGNATURE) then
     Exit;
 
-  var FileHeader := PImageFileHeader(NtBase + SizeOf(DWORD));
+  FileHeader := PImageFileHeader(NtBase + SizeOf(DWORD));
   NumberOfSections := FileHeader.NumberOfSections;
 
-  var OptHeader := PByte(FileHeader) + SizeOf(TImageFileHeader);
+  OptHeader := PByte(FileHeader) + SizeOf(TImageFileHeader);
   if (not CheckBounds(OptHeader, SizeOf(Word))) then
     Exit;
 
-  var Magic := PWord(OptHeader)^;
+  Magic := PWord(OptHeader)^;
   Is64 := (Magic = IMAGE_NT_OPTIONAL_HDR64_MAGIC);
 
   if (Is64) then
   begin
-    var Opt := PImageOptionalHeader64(OptHeader);
+    Opt := PImageOptionalHeader64(OptHeader);
     NumberOfRvaAndSizes := Opt.NumberOfRvaAndSizes;
     DataDirectory := @Opt.DataDirectory[0];
   end else
   begin
-    var Opt := PImageOptionalHeader32(OptHeader);
-    NumberOfRvaAndSizes := Opt.NumberOfRvaAndSizes;
-    DataDirectory := @Opt.DataDirectory[0];
+    Opt2 := PImageOptionalHeader32(OptHeader);
+    NumberOfRvaAndSizes := Opt2.NumberOfRvaAndSizes;
+    DataDirectory := @Opt2.DataDirectory[0];
   end;
 
   // Section headers follow the optional header
@@ -178,15 +186,21 @@ begin
 end;
 
 function TPEImage.FindSection(const AName: AnsiString): PImageSectionHeader;
+var
+  i: Integer;
+  Sec: PImageSectionHeader;
+  Name: string;
+  k: Integer;
+  C: AnsiChar;
 begin
-  for var i := 0 to NumberOfSections-1 do
+  for i := 0 to NumberOfSections-1 do
   begin
-    var Sec := Section(i);
+    Sec := Section(i);
     // Section names are 8 bytes, null padded (not necessarily null terminated)
-    var Name: string := '';
-    for var k := 0 to IMAGE_SIZEOF_SHORT_NAME-1 do
+    Name := '';
+    for k := 0 to IMAGE_SIZEOF_SHORT_NAME-1 do
     begin
-      var C := AnsiChar(Sec.Name[k]);
+      C := AnsiChar(Sec.Name[k]);
       if (C = #0) then
         break;
       Name := Name + Char(C);
@@ -198,17 +212,23 @@ begin
 end;
 
 function TPEImage.RvaToPtr(Rva: Cardinal): PByte;
+var
+  i: Integer;
+  Sec: PImageSectionHeader;
+  VSize: DWORD;
+  FileOffset: DWORD;
+  P: PByte;
 begin
-  for var i := 0 to NumberOfSections-1 do
+  for i := 0 to NumberOfSections-1 do
   begin
-    var Sec := Section(i);
-    var VSize := Sec.Misc.VirtualSize;
+    Sec := Section(i);
+    VSize := Sec.Misc.VirtualSize;
     if (VSize = 0) then
       VSize := Sec.SizeOfRawData;
     if (Rva >= Sec.VirtualAddress) and (Rva < Sec.VirtualAddress + VSize) then
     begin
-      var FileOffset := Sec.PointerToRawData + (Rva - Sec.VirtualAddress);
-      var P := Base + FileOffset;
+      FileOffset := Sec.PointerToRawData + (Rva - Sec.VirtualAddress);
+      P := Base + FileOffset;
       if (CheckBounds(P, 0)) then
         Exit(P);
       Exit(nil);
@@ -224,15 +244,19 @@ end;
 
 // Compare a resource directory string (UTF-16, word length prefixed) to AName
 function ResourceNameMatches(ResBase: PByte; Entry: PImageResourceDirectoryEntry; const AName: string): Boolean;
+var
+  StrPtr: PByte;
+  Len: Word;
+  Chars: PWideChar;
+  S: string;
 begin
   // Only string-named entries can match a named resource
   if (Entry.Name and IMAGE_RESOURCE_NAME_IS_STRING = 0) then
     Exit(False);
 
-  var StrPtr := ResBase + (Entry.Name and (not IMAGE_RESOURCE_NAME_IS_STRING));
-  var Len := PWord(StrPtr)^;
-  var Chars := PWideChar(StrPtr + SizeOf(Word));
-  var S: string;
+  StrPtr := ResBase + (Entry.Name and (not IMAGE_RESOURCE_NAME_IS_STRING));
+  Len := PWord(StrPtr)^;
+  Chars := PWideChar(StrPtr + SizeOf(Word));
   SetString(S, Chars, Len);
   Result := SameText(S, AName);
 end;
@@ -244,11 +268,16 @@ type
 // Find the entry matching AName within the directory at DirPtr; returns the
 // entry or nil.
 function FindResourceEntry(ResBase, DirPtr: PByte; const AName: string): PImageResourceDirectoryEntry;
+var
+  Dir: PImageResourceDirectory;
+  Count: Integer;
+  Entries: PResDirEntryArray;
+  i: Integer;
 begin
-  var Dir := PImageResourceDirectory(DirPtr);
-  var Count := Dir.NumberOfNamedEntries + Dir.NumberOfIdEntries;
-  var Entries := PResDirEntryArray(DirPtr + SizeOf(TImageResourceDirectory));
-  for var i := 0 to Count-1 do
+  Dir := PImageResourceDirectory(DirPtr);
+  Count := Dir.NumberOfNamedEntries + Dir.NumberOfIdEntries;
+  Entries := PResDirEntryArray(DirPtr + SizeOf(TImageResourceDirectory));
+  for i := 0 to Count-1 do
     if (ResourceNameMatches(ResBase, @Entries[i], AName)) then
       Exit(@Entries[i]);
   Result := nil;
@@ -256,15 +285,19 @@ end;
 
 // Descend to the first leaf (data entry) under a directory node
 function FirstLeaf(ResBase: PByte; Entry: PImageResourceDirectoryEntry): PImageResourceDataEntry;
+var
+  Ofs: DWORD;
+  Dir: PImageResourceDirectory;
+  Entries: PResDirEntryArray;
 begin
   Result := nil;
-  var Ofs := Entry.OffsetToData;
+  Ofs := Entry.OffsetToData;
   while (Ofs and IMAGE_RESOURCE_DATA_IS_DIRECTORY <> 0) do
   begin
-    var Dir := PImageResourceDirectory(ResBase + (Ofs and (not IMAGE_RESOURCE_DATA_IS_DIRECTORY)));
+    Dir := PImageResourceDirectory(ResBase + (Ofs and (not IMAGE_RESOURCE_DATA_IS_DIRECTORY)));
     if (Dir.NumberOfNamedEntries + Dir.NumberOfIdEntries = 0) then
       Exit;
-    var Entries := PResDirEntryArray(PByte(Dir) + SizeOf(TImageResourceDirectory));
+    Entries := PResDirEntryArray(PByte(Dir) + SizeOf(TImageResourceDirectory));
     Entry := @Entries[0];
     Ofs := Entry.OffsetToData;
   end;
@@ -274,8 +307,22 @@ end;
 // -----------------------------------------------------------------------------
 
 procedure TDebugInfoPEReader.LoadFromMemory(DebugInfo: TDebugInfo; Base: PByte; Size: NativeInt);
+var
+  Image: TPEImage;
+  Section: PImageSectionHeader;
+  DataSize: DWORD;
+  P: PByte;
+  Stream: TMemoryStream;
+  Reader: TDebugInfoJdbgReader;
+  ResDir: PImageDataDirectory;
+  ResBase: PByte;
+  TypeEntry: PImageResourceDirectoryEntry;
+  NameDir: PByte;
+  NameEntry: PImageResourceDirectoryEntry;
+  Leaf: PImageResourceDataEntry;
+  DataPtr: PByte;
+  Reader2: TDebugInfoMadExceptReader;
 begin
-  var Image: TPEImage;
   if (not Image.Parse(Base, Size)) then
     raise EDebugInfo.CreateFmt(sPEInvalidImage, ['bad DOS/NT headers']);
 
@@ -287,25 +334,25 @@ begin
   // -----------------------------------------------------------------
   // 1) JEDI / JCL: JCLDEBUG section
   // -----------------------------------------------------------------
-  var Section := Image.FindSection(JclDebugSectionName);
+  Section := Image.FindSection(JclDebugSectionName);
   if (Section <> nil) then
   begin
-    var DataSize := Section.Misc.VirtualSize;
+    DataSize := Section.Misc.VirtualSize;
     if (DataSize = 0) then
       DataSize := Section.SizeOfRawData;
 
-    var P := Base + Section.PointerToRawData;
+    P := Base + Section.PointerToRawData;
     if (not Image.CheckBounds(P, DataSize)) then
       raise EDebugInfo.CreateFmt(sPEInvalidImage, ['JCLDEBUG section out of bounds']);
 
     Logger.Info('Found embedded JEDI/JCL debug info (JCLDEBUG section, %.0n bytes)', [DataSize * 1.0]);
 
-    var Stream := TMemoryStream.Create;
+    Stream := TMemoryStream.Create;
     try
       Stream.WriteBuffer(P^, DataSize);
       Stream.Position := 0;
 
-      var Reader := TDebugInfoJdbgReader.Create;
+      Reader := TDebugInfoJdbgReader.Create;
       try
         Reader.LoadFromStream(Stream, DebugInfo);
       finally
@@ -323,39 +370,39 @@ begin
   // -----------------------------------------------------------------
   if (IMAGE_DIRECTORY_ENTRY_RESOURCE < Integer(Image.NumberOfRvaAndSizes)) then
   begin
-    var ResDir := PImageDataDirectory(PByte(Image.DataDirectory) + IMAGE_DIRECTORY_ENTRY_RESOURCE * SizeOf(TImageDataDirectory));
+    ResDir := PImageDataDirectory(PByte(Image.DataDirectory) + IMAGE_DIRECTORY_ENTRY_RESOURCE * SizeOf(TImageDataDirectory));
     if (ResDir.VirtualAddress <> 0) and (ResDir.Size <> 0) then
     begin
-      var ResBase := Image.RvaToPtr(ResDir.VirtualAddress);
+      ResBase := Image.RvaToPtr(ResDir.VirtualAddress);
       if (ResBase <> nil) then
       begin
         // Level 1: resource type "MAD"
-        var TypeEntry := FindResourceEntry(ResBase, ResBase, MadExceptResType);
+        TypeEntry := FindResourceEntry(ResBase, ResBase, MadExceptResType);
         if (TypeEntry <> nil) and (TypeEntry.OffsetToData and IMAGE_RESOURCE_DATA_IS_DIRECTORY <> 0) then
         begin
-          var NameDir := ResBase + (TypeEntry.OffsetToData and (not IMAGE_RESOURCE_DATA_IS_DIRECTORY));
+          NameDir := ResBase + (TypeEntry.OffsetToData and (not IMAGE_RESOURCE_DATA_IS_DIRECTORY));
           // Level 2: resource name "EXCEPT"
-          var NameEntry := FindResourceEntry(ResBase, NameDir, MadExceptResName);
+          NameEntry := FindResourceEntry(ResBase, NameDir, MadExceptResName);
           if (NameEntry <> nil) then
           begin
-            var Leaf := FirstLeaf(ResBase, NameEntry);
+            Leaf := FirstLeaf(ResBase, NameEntry);
             if (Leaf <> nil) then
             begin
-              var DataPtr := Image.RvaToPtr(Leaf.OffsetToData);
+              DataPtr := Image.RvaToPtr(Leaf.OffsetToData);
               if (DataPtr <> nil) and (Image.CheckBounds(DataPtr, Leaf.Size)) then
               begin
                 Logger.Info('Found embedded madExcept debug info (MAD/EXCEPT resource, %.0n bytes)', [Leaf.Size * 1.0]);
 
-                var Stream := TMemoryStream.Create;
+                Stream := TMemoryStream.Create;
                 try
                   Stream.WriteBuffer(DataPtr^, Leaf.Size);
                   Stream.Position := 0;
 
-                  var Reader := TDebugInfoMadExceptReader.Create;
+                  Reader2 := TDebugInfoMadExceptReader.Create;
                   try
-                    Reader.LoadFromStream(Stream, DebugInfo);
+                    Reader2.LoadFromStream(Stream, DebugInfo);
                   finally
-                    Reader.Free;
+                    Reader2.Free;
                   end;
                 finally
                   Stream.Free;
@@ -376,11 +423,13 @@ end;
 // -----------------------------------------------------------------------------
 
 procedure TDebugInfoPEReader.LoadFromStream(Stream: TStream; DebugInfo: TDebugInfo);
+var
+  MemoryStream: TMemoryStream;
+  Buffer: TMemoryStream;
 begin
   Logger.Info('Reading PE image');
 
-  var MemoryStream: TMemoryStream := nil;
-  var Buffer: TMemoryStream;
+  MemoryStream := nil;
 
   if (Stream is TMemoryStream) and (Stream.Position = 0) then
     Buffer := TMemoryStream(Stream)

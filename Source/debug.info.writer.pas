@@ -43,6 +43,14 @@ implementation
 uses
   System.SysUtils;
 
+{$if (CompilerVersion < 31.0)}
+type
+  // TBufferedFileStream was introduced in Delphi 10.1 Berlin. On older compilers
+  // fall back to an unbuffered TFileStream (functionally equivalent). Only used
+  // when SAVE_MEMSTREAM is undefined.
+  TBufferedFileStream = TFileStream;
+{$ifend}
+
 type
   // TSafeMemoryStream: A memory stream that clears the allocated memory
   // in order to avoid writing junk to the pdb file.
@@ -74,13 +82,19 @@ begin
 end;
 
 procedure TDebugInfoWriter.SaveToFile(const Filename: string; DebugInfo: TDebugInfo);
+var
+{$ifdef SAVE_MEMSTREAM}
+  Stream: TSafeMemoryStream;
+{$else SAVE_MEMSTREAM}
+  Stream: TBufferedFileStream;
+{$endif SAVE_MEMSTREAM}
 begin
   try
 
 {$ifdef SAVE_MEMSTREAM}
-    var Stream := TSafeMemoryStream.Create;
+    Stream := TSafeMemoryStream.Create;
 {$else SAVE_MEMSTREAM}
-    var Stream := TBufferedFileStream.Create(Filename, fmCreate, $8000);
+    Stream := TBufferedFileStream.Create(Filename, fmCreate, $8000);
 {$endif SAVE_MEMSTREAM}
     try
 
